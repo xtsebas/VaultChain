@@ -85,6 +85,40 @@ npm run dev
 
 ---
 
+## Flujo de desarrollo con migraciones
+
+Las migraciones se generan en el entorno local y se aplican automáticamente al iniciar Docker.
+
+**Al modificar un modelo:**
+
+```bash
+# 1. Activar el entorno virtual local (no dentro de Docker)
+cd backend
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Mac/Linux
+
+# 2. Generar la migración — solo requiere el entorno virtual, no la base de datos
+python manage.py makemigrations
+
+# 3. Incluir en el commit tanto el modelo como el archivo de migración generado
+git add .
+git commit -m "..."
+```
+
+**Para levantar el proyecto con las migraciones aplicadas:**
+
+```bash
+docker-compose up --build
+# El comando migrate se ejecuta automaticamente al iniciar el backend
+```
+
+**Consideraciones para el equipo:**
+- `makemigrations` debe ejecutarse siempre en el entorno local con el venv
+- `migrate` es ejecutado por Docker al arrancar — no se debe correr manualmente
+- Los archivos de migración deben commitearse junto con el modelo que los origina
+- No se debe ejecutar `makemigrations` dentro del contenedor, ya que los archivos generados quedan aislados y no se reflejan en el repositorio
+---
+
 ## Equipo
 
 - Sebastian Huertas
