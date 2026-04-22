@@ -1,6 +1,7 @@
 from django.urls import path
-from . import views
+from .views import RegisterView, get_user_public_key
 
 urlpatterns = [
-    path('users/<uuid:user_id>/key', views.get_user_public_key, name='get_user_public_key'),
+    path('register', RegisterView.as_view(), name='auth-register'),
+    path('users/<uuid:user_id>/key', get_user_public_key, name='get_user_public_key'),
 ]
