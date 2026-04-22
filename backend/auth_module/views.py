@@ -10,6 +10,10 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from django.http import JsonResponse, HttpResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -35,11 +39,9 @@ class RegisterView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        # Hash password with Argon2id
         ph = PasswordHasher()
         password_hash = ph.hash(password)
 
-        # Generate ECC P-256 key pair
         private_key = generate_private_key(SECP256R1())
         public_key_pem = private_key.public_key().public_bytes(
             Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
@@ -48,7 +50,6 @@ class RegisterView(APIView):
             Encoding.DER, PrivateFormat.PKCS8, NoEncryption()
         )
 
-        # Derive 256-bit key from password using PBKDF2-SHA256 (600k iterations)
         pbkdf2_salt = os.urandom(32)
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -58,12 +59,10 @@ class RegisterView(APIView):
         )
         derived_key = kdf.derive(password.encode('utf-8'))
 
-        # Encrypt private key with AES-256-GCM
         nonce = os.urandom(12)
         aesgcm = AESGCM(derived_key)
         ciphertext_with_tag = aesgcm.encrypt(nonce, private_key_der, None)
 
-        # Format: base64(salt):base64(nonce):base64(ciphertext+tag)
         encrypted_private_key = ':'.join([
             base64.b64encode(pbkdf2_salt).decode(),
             base64.b64encode(nonce).decode(),
@@ -90,3 +89,23 @@ class RegisterView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def get_user_public_key(request, user_id):
+    """
+    GET /auth/users/{user_id}/key
+    Retorna la llave pública del usuario en formato PEM.
+    """
+    try:
+        user = User.objects.get(id=user_id)
+        return HttpResponse(
+            user.public_key,
+            content_type='application/x-pem-file',
+            status=200
+        )
+    except User.DoesNotExist:
+        return JsonResponse({"error": "User not found"}, status=404)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
