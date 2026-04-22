@@ -119,6 +119,46 @@ docker-compose up --build
 - No se debe ejecutar `makemigrations` dentro del contenedor, ya que los archivos generados quedan aislados y no se reflejan en el repositorio
 ---
 
+## Tests
+
+Los tests corren dentro del contenedor Docker. Asegúrate de tener los contenedores levantados antes de ejecutarlos:
+
+```bash
+docker-compose up -d
+```
+
+**Todos los tests:**
+```bash
+docker exec vaultchain_backend python manage.py test
+```
+
+**Por módulo:**
+```bash
+docker exec vaultchain_backend python manage.py test auth_module
+docker exec vaultchain_backend python manage.py test blockchain
+docker exec vaultchain_backend python manage.py test signatures
+docker exec vaultchain_backend python manage.py test crypto_module
+```
+
+**Por archivo de test:**
+```bash
+docker exec vaultchain_backend python manage.py test auth_module.tests.test_register
+docker exec vaultchain_backend python manage.py test auth_module.tests.test_login
+docker exec vaultchain_backend python manage.py test auth_module.tests.test_public_key
+```
+
+**Un test específico:**
+```bash
+docker exec vaultchain_backend python manage.py test auth_module.tests.test_register.RegisterSuccessTest.test_returns_201_with_expected_fields
+```
+
+El patrón para un test específico es siempre:
+```
+modulo.tests.archivo.Clase.metodo
+```
+
+---
+
 ## Equipo
 
 - Sebastian Huertas
