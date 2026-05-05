@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'auth_module',
+    'crypto_module',
 ]
 
 AUTH_USER_MODEL = 'auth_module.User'
