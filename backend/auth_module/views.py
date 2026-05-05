@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from cryptography.hazmat.primitives.asymmetric.ec import generate_private_key, SECP256R1
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import (
     Encoding, PublicFormat, PrivateFormat, NoEncryption,
 )
@@ -46,7 +46,10 @@ class RegisterView(APIView):
         ph = PasswordHasher()
         password_hash = ph.hash(password)
 
-        private_key = generate_private_key(SECP256R1())
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+        )
         public_key_pem = private_key.public_key().public_bytes(
             Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
         ).decode('utf-8')
