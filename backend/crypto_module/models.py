@@ -6,6 +6,7 @@ from django.conf import settings
 class Group(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
+    group_key = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -56,7 +57,7 @@ class Message(models.Model):
     )
     group_id = models.UUIDField(null=True, blank=True)
     ciphertext = models.TextField()
-    encrypted_key = models.TextField()
+    encrypted_key = models.TextField(blank=True, default='')
     nonce = models.CharField(max_length=24)
     auth_tag = models.CharField(max_length=24)
     signature = models.TextField(null=True, blank=True)

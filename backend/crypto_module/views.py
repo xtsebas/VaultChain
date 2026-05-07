@@ -19,7 +19,7 @@ from .encryption import encrypt_message, generate_aes_key, generate_nonce, encry
 def _authenticate_request(request):
     """
     Extrae y valida el JWT del header Authorization.
-    Retorna (sender, None) si es válido, o (None, Response de error) si falla.
+    Retorna (user, None) si es válido, o (None, Response de error) si falla.
     """
     auth_header = request.headers.get('Authorization', '')
     if not auth_header.startswith('Bearer '):
@@ -44,11 +44,11 @@ def _authenticate_request(request):
         return None, Response({'error': 'Invalid token payload'}, status=status.HTTP_401_UNAUTHORIZED)
 
     try:
-        sender = User.objects.get(id=user_id)
+        user = User.objects.get(id=user_id)
     except User.DoesNotExist:
         return None, Response({'error': 'User not found'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    return sender, None
+    return user, None
 
 
 class SendMessageView(APIView):
@@ -111,47 +111,33 @@ class SendMessageView(APIView):
         )
 
     def _send_group_message(self, sender, group_id, plaintext):
-        members = (
-            GroupMember.objects
-            .filter(group_id=group_id)
-            .select_related('user')
-        )
-        if not members.exists():
+        try:
+            group = Group.objects.get(id=group_id)
+        except Group.DoesNotExist:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not GroupMember.objects.filter(group=group, user=sender).exists():
             return Response(
-                {'error': 'Group not found or has no members'},
-                status=status.HTTP_404_NOT_FOUND,
+                {'error': 'You are not a member of this group'},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         try:
-            # Una sola clave AES efímera y nonce para todos los miembros
-            aes_key = generate_aes_key()
+            # Usar la clave AES única del grupo (guardada en base64)
+            aes_key = base64.b64decode(group.group_key)
             nonce = generate_nonce()
             ciphertext_bytes, auth_tag_bytes = encrypt_aes_gcm(
                 plaintext.encode('utf-8'), aes_key, nonce
             )
 
-            ciphertext_b64 = base64.b64encode(ciphertext_bytes).decode()
-            nonce_b64 = base64.b64encode(nonce).decode()
-            auth_tag_b64 = base64.b64encode(auth_tag_bytes).decode()
-
-            # Un Message por miembro con su propia encrypted_key
-            messages = []
-            for member in members:
-                encrypted_key_b64 = base64.b64encode(
-                    encrypt_key_rsa_oaep(aes_key, member.user.public_key)
-                ).decode()
-
-                msg = Message.objects.create(
-                    sender=sender,
-                    recipient=member.user,
-                    group_id=group_id,
-                    ciphertext=ciphertext_b64,
-                    encrypted_key=encrypted_key_b64,
-                    nonce=nonce_b64,
-                    auth_tag=auth_tag_b64,
-                )
-                messages.append(msg)
-
+            message = Message.objects.create(
+                sender=sender,
+                recipient=None,
+                group_id=group_id,
+                ciphertext=base64.b64encode(ciphertext_bytes).decode(),
+                nonce=base64.b64encode(nonce).decode(),
+                auth_tag=base64.b64encode(auth_tag_bytes).decode(),
+            )
         except Exception as e:
             return Response(
                 {'error': f'Error encrypting group message: {str(e)}'},
@@ -160,12 +146,13 @@ class SendMessageView(APIView):
 
         return Response(
             {
+                'id': str(message.id),
                 'group_id': str(group_id),
-                'message_count': len(messages),
-                'ciphertext': ciphertext_b64,
-                'nonce': nonce_b64,
-                'auth_tag': auth_tag_b64,
-                'created_at': messages[0].created_at.isoformat(),
+                'sender_id': str(sender.id),
+                'ciphertext': message.ciphertext,
+                'nonce': message.nonce,
+                'auth_tag': message.auth_tag,
+                'created_at': message.created_at.isoformat(),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -175,7 +162,8 @@ class CreateGroupView(APIView):
     def post(self, request):
         """
         POST /groups/
-        Crea un grupo con los miembros indicados.
+        Crea un grupo, genera su clave AES única y la distribuye cifrada
+        con la llave pública RSA de cada miembro.
         """
         sender, error = _authenticate_request(request)
         if error:
@@ -188,7 +176,6 @@ class CreateGroupView(APIView):
         data = serializer.validated_data
         member_ids = data['member_ids']
 
-        # Verificar que todos los usuarios existen antes de crear el grupo
         users = list(User.objects.filter(id__in=member_ids))
         found_ids = {str(u.id) for u in users}
         missing = [str(mid) for mid in member_ids if str(mid) not in found_ids]
@@ -198,10 +185,23 @@ class CreateGroupView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        group = Group.objects.create(name=data['name'])
+        # Clave AES-256 única para este grupo
+        group_aes_key = generate_aes_key()
 
+        group = Group.objects.create(
+            name=data['name'],
+            group_key=base64.b64encode(group_aes_key).decode(),
+        )
+
+        # Cada miembro recibe la clave del grupo cifrada con su llave pública RSA
         GroupMember.objects.bulk_create([
-            GroupMember(group=group, user=user)
+            GroupMember(
+                group=group,
+                user=user,
+                encrypted_key=base64.b64encode(
+                    encrypt_key_rsa_oaep(group_aes_key, user.public_key)
+                ).decode(),
+            )
             for user in users
         ])
 
@@ -219,13 +219,58 @@ class CreateGroupView(APIView):
         )
 
 
+class GetGroupMessagesView(APIView):
+    def get(self, request, group_id):
+        """
+        GET /groups/<group_id>/messages
+        Retorna los mensajes del grupo y la clave del grupo cifrada
+        con la llave pública RSA del usuario solicitante (para descifrado cliente).
+        """
+        user, error = _authenticate_request(request)
+        if error:
+            return error
+
+        try:
+            member = GroupMember.objects.get(group_id=group_id, user=user)
+        except GroupMember.DoesNotExist:
+            return Response(
+                {'error': 'Group not found or you are not a member'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        messages = (
+            Message.objects
+            .filter(group_id=group_id)
+            .order_by('created_at')
+        )
+
+        return Response(
+            {
+                'group_id': str(group_id),
+                'your_encrypted_group_key': member.encrypted_key,
+                'messages': [
+                    {
+                        'id': str(msg.id),
+                        'sender_id': str(msg.sender_id),
+                        'ciphertext': msg.ciphertext,
+                        'nonce': msg.nonce,
+                        'auth_tag': msg.auth_tag,
+                        'created_at': msg.created_at.isoformat(),
+                    }
+                    for msg in messages
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 @csrf_exempt
 @require_http_methods(["GET"])
 @jwt_required
 def get_user_messages(request, user_id):
     """
     GET /messages/{user_id}
-    Obtiene todos los mensajes recibidos por un usuario.
+    Obtiene todos los mensajes directos recibidos por un usuario.
     """
     if str(request.user.id) != str(user_id):
         return JsonResponse(
@@ -234,14 +279,17 @@ def get_user_messages(request, user_id):
         )
 
     try:
-        messages = Message.objects.filter(recipient_id=user_id).order_by('-created_at')
+        messages = (
+            Message.objects
+            .filter(recipient_id=user_id, group_id__isnull=True)
+            .order_by('-created_at')
+        )
 
         messages_data = [
             {
                 'id': str(msg.id),
                 'sender_id': str(msg.sender.id),
                 'recipient_id': str(msg.recipient.id),
-                'group_id': str(msg.group_id) if msg.group_id else None,
                 'ciphertext': msg.ciphertext,
                 'encrypted_key': msg.encrypted_key,
                 'nonce': msg.nonce,
