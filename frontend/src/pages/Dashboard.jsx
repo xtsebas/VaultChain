@@ -1,106 +1,42 @@
 import { useState } from 'react';
-import { alpha } from '@mui/material/styles';
-import {
-  AppBar,
-  Avatar,
-  Box,
-  Card,
-  CardContent,
-  Grid,
-  IconButton,
-  Toolbar,
-  Tooltip,
-  Typography,
-} from '@mui/material';
-import LockIcon from '@mui/icons-material/Lock';
-import KeyIcon from '@mui/icons-material/Key';
-import HistoryIcon from '@mui/icons-material/History';
-import LinkIcon from '@mui/icons-material/Link';
 import SessionWidget from '../components/SessionWidget';
+import Messaging from '../components/Messaging';
 import { getSessionUser } from '../services/authService';
 
-function getInitials(name = '') {
-  return name
-    .split(' ')
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase())
-    .join('');
+function initials(name = '') {
+  return name.split(' ').slice(0, 2).map((w) => w[0]?.toUpperCase()).join('');
 }
-
-const modules = [
-  {
-    icon: <LockIcon sx={{ fontSize: 36, color: 'primary.main' }} />,
-    title: '1',
-    description: '',
-  },
-  {
-    icon: <KeyIcon sx={{ fontSize: 36, color: 'secondary.main' }} />,
-    title: '2',
-    description: '',
-  },
-  {
-    icon: <HistoryIcon sx={{ fontSize: 36, color: 'success.main' }} />,
-    title: '3',
-    description: '',
-  },
-  {
-    icon: <LinkIcon sx={{ fontSize: 36, color: 'warning.main' }} />,
-    title: '4',
-    description: '',
-  },
-];
 
 export default function Dashboard() {
   const user = getSessionUser();
-  const [profileAnchor, setProfileAnchor] = useState(null);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', bgcolor: 'grey.100' }}>
-      {/* AppBar */}
-      <AppBar position="fixed" elevation={2}>
-        <Toolbar>
-          <LockIcon sx={{ mr: 1.5 }} />
-          <Typography variant="h6" fontWeight={700} sx={{ flexGrow: 1 }}>
-            VaultChain
-          </Typography>
-          <Tooltip title="Mi perfil">
-            <IconButton onClick={(e) => setProfileAnchor(e.currentTarget)} sx={{ p: 0 }}>
-              <Avatar
-                sx={{
-                  width: 38,
-                  height: 38,
-                  bgcolor: 'primary.dark',
-                  border: (t) => `2px solid ${alpha(t.palette.primary.contrastText, 0.6)}`,
-                }}
-              >
-                {getInitials(user?.display_name)}
-              </Avatar>
-            </IconButton>
-          </Tooltip>
-        </Toolbar>
-      </AppBar>
+    <>
+      <nav className="appbar">
+        <span style={{ fontSize: 20 }}>🔒</span>
+        <span className="appbar-title">VaultChain</span>
+        <button
+          className="appbar-btn"
+          title="Crypto Log (Shift+I)"
+          onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { shiftKey: true, key: 'I', bubbles: true }))}
+        >
+          {'</>'}
+        </button>
+        <div className="avatar" title="Mi perfil" onClick={() => setProfileOpen(true)}>
+          {initials(user?.display_name)}
+        </div>
+      </nav>
 
-      {/* Session popover controlled from AppBar avatar */}
-      <SessionWidget
-        anchorEl={profileAnchor}
-        onClose={() => setProfileAnchor(null)}
-      />
+      <SessionWidget open={profileOpen} onClose={() => setProfileOpen(false)} />
 
-      {/* Content */}
-      <Box component="main" sx={{ flexGrow: 1, mt: 8, px: { xs: 2, sm: 4 }, py: 4 }}>
-        {/* Welcome */}
-        <Box sx={{ mb: 4 }}>
-          <Typography variant="h5" fontWeight={700} color="text.primary">
-            Hola, {user?.display_name}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" mt={0.5}>
-            Bienvenido a VaultChain
-          </Typography>
-        </Box>
-
-        {/* Module cards */}
-
-      </Box>
-    </Box>
+      <main className="main-content">
+        <div className="welcome" style={{ marginBottom: 20 }}>
+          <h2>Hola, {user?.display_name}</h2>
+          <p>Bienvenido a VaultChain — Mensajería cifrada E2E</p>
+        </div>
+        <Messaging />
+      </main>
+    </>
   );
 }

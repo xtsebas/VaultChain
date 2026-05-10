@@ -1,21 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, Link as RouterLink, useLocation } from 'react-router-dom';
-import {
-  Alert,
-  Box,
-  Button,
-  CircularProgress,
-  Container,
-  IconButton,
-  InputAdornment,
-  Link,
-  Paper,
-  TextField,
-  Typography,
-} from '@mui/material';
-import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
-import Visibility from '@mui/icons-material/Visibility';
-import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { login, saveSession } from '../services/authService';
 
 export default function Login() {
@@ -32,25 +16,25 @@ export default function Login() {
   function validate() {
     const e = {};
     if (!form.email.trim()) e.email = 'El email es requerido';
-    if (!form.password) e.password = 'La contraseña es requerida';
+    if (!form.password)     e.password = 'La contraseña es requerida';
     return e;
   }
 
   function handleChange(e) {
     const { name, value } = e.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
-    setErrors((prev) => ({ ...prev, [name]: '' }));
+    setForm((p) => ({ ...p, [name]: value }));
+    setErrors((p) => ({ ...p, [name]: '' }));
     setApiError('');
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
-    const fieldErrors = validate();
-    if (Object.keys(fieldErrors).length) { setErrors(fieldErrors); return; }
+    const fe = validate();
+    if (Object.keys(fe).length) { setErrors(fe); return; }
     setLoading(true);
     try {
       const data = await login(form);
-      saveSession(data);
+      saveSession(data, form.password);
       navigate('/dashboard');
     } catch (err) {
       if (err.status === 401) {
@@ -66,78 +50,55 @@ export default function Login() {
   }
 
   return (
-    <Box
-      sx={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        background: (t) =>
-          `linear-gradient(135deg, ${t.palette.primary.dark} 0%, ${t.palette.primary.main} 100%)`,
-      }}
-    >
-      <Container maxWidth="sm">
-        <Paper elevation={6} sx={{ p: { xs: 3, sm: 5 } }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 3 }}>
-            <Box sx={{ bgcolor: 'primary.main', borderRadius: '50%', p: 1.5, mb: 1, display: 'flex' }}>
-              <LockOutlinedIcon sx={{ color: 'primary.contrastText', fontSize: 32 }} />
-            </Box>
-            <Typography variant="h5" fontWeight={700} color="primary.dark">
-              VaultChain
-            </Typography>
-            <Typography variant="subtitle1" color="text.secondary" mt={0.5}>
-              Iniciar sesión
-            </Typography>
-          </Box>
+    <div className="auth-page">
+      <div className="auth-card">
+        <div className="auth-logo">
+          <div className="auth-logo-icon">🔒</div>
+          <h1>VaultChain</h1>
+          <p>Iniciar sesión</p>
+        </div>
 
-          {justRegistered && (
-            <Alert severity="success" sx={{ mb: 2 }}>
-              ¡Cuenta creada exitosamente! Ingresa tus credenciales.
-            </Alert>
-          )}
-          {apiError && <Alert severity="error" sx={{ mb: 2 }}>{apiError}</Alert>}
+        {justRegistered && (
+          <div className="alert alert-success">¡Cuenta creada exitosamente! Ingresa tus credenciales.</div>
+        )}
+        {apiError && <div className="alert alert-error">{apiError}</div>}
 
-          <Box component="form" onSubmit={handleSubmit} noValidate>
-            <TextField
-              fullWidth label="Correo electrónico" name="email" type="email"
+        <form onSubmit={handleSubmit} noValidate>
+          <div className="field">
+            <label htmlFor="email">Correo electrónico</label>
+            <input
+              id="email" name="email" type="email" autoComplete="email" autoFocus
               value={form.email} onChange={handleChange}
-              error={!!errors.email} helperText={errors.email}
-              margin="normal" autoComplete="email" autoFocus
+              className={errors.email ? 'err' : ''}
             />
-            <TextField
-              fullWidth label="Contraseña" name="password"
-              type={showPassword ? 'text' : 'password'}
-              value={form.password} onChange={handleChange}
-              error={!!errors.password} helperText={errors.password}
-              margin="normal" autoComplete="current-password"
-              slotProps={{
-                input: {
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton onClick={() => setShowPassword((s) => !s)} edge="end">
-                        {showPassword ? <VisibilityOff /> : <Visibility />}
-                      </IconButton>
-                    </InputAdornment>
-                  ),
-                },
-              }}
-            />
+            {errors.email && <span className="helper err">{errors.email}</span>}
+          </div>
 
-            <Button type="submit" fullWidth variant="contained" size="large"
-              disabled={loading} sx={{ mt: 3, mb: 2 }}>
-              {loading ? <CircularProgress size={24} color="inherit" /> : 'Iniciar sesión'}
-            </Button>
+          <div className="field">
+            <label htmlFor="password">Contraseña</label>
+            <div className="field-input-wrap">
+              <input
+                id="password" name="password" type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password" className={`has-eye${errors.password ? ' err' : ''}`}
+                value={form.password} onChange={handleChange}
+              />
+              <button type="button" className="eye-btn" onClick={() => setShowPassword((s) => !s)}>
+                {showPassword ? '🙈' : '👁'}
+              </button>
+            </div>
+            {errors.password && <span className="helper err">{errors.password}</span>}
+          </div>
 
-            <Box sx={{ textAlign: 'center' }}>
-              <Typography variant="body2" color="text.secondary">
-                ¿No tienes cuenta?{' '}
-                <Link component={RouterLink} to="/register" fontWeight={600}>
-                  Regístrate
-                </Link>
-              </Typography>
-            </Box>
-          </Box>
-        </Paper>
-      </Container>
-    </Box>
+          <button type="submit" className="btn btn-primary btn-full mt-3" disabled={loading}>
+            {loading ? <span className="spinner" /> : 'Iniciar sesión'}
+          </button>
+
+          <p className="text-sm text-center mt-3">
+            ¿No tienes cuenta?{' '}
+            <Link to="/register" className="link">Regístrate</Link>
+          </p>
+        </form>
+      </div>
+    </div>
   );
 }
