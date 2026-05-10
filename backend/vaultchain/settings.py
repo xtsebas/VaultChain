@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'auth_module',
     'crypto_module',
+    'blockchain',
 ]
 
 AUTH_USER_MODEL = 'auth_module.User'
