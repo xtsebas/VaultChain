@@ -1,4 +1,6 @@
+import base64
 import jwt
+
 from django.conf import settings
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -8,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from auth_module.models import User
+from .encryption import encrypt_message, generate_aes_key, generate_nonce, encrypt_aes_gcm, encrypt_key_rsa_oaep
 from .models import Group, GroupMember, Message
 from .decorators import jwt_required
 from .serializers import SendMessageSerializer, CreateGroupSerializer
@@ -53,15 +56,11 @@ class SendMessageView(APIView):
     def post(self, request):
         """
         POST /messages/
-        Recibe el mensaje ya cifrado por el cliente (E2E encryption).
-        Acepta recipient_id (directo) o group_id (grupal).
+        El cliente firma el SHA-256(plaintext) con ECDSA y envia el plaintext + firma.
+        El servidor cifra con RSA-OAEP + AES-256-GCM y guarda la firma.
 
-        Payload directo:
-          { recipient_id, ciphertext, encrypted_key, nonce, auth_tag }
-
-        Payload grupal:
-          { group_id, ciphertext, nonce, auth_tag,
-            encrypted_keys: [{user_id, encrypted_key}, ...] }
+        Payload directo:  { recipient_id, plaintext, signature }
+        Payload grupal:   { group_id, plaintext, signature }
         """
         sender, error = _authenticate_request(request)
         if error:
@@ -84,18 +83,26 @@ class SendMessageView(APIView):
         except User.DoesNotExist:
             return Response({'error': 'Recipient not found'}, status=status.HTTP_404_NOT_FOUND)
 
+        if not recipient.public_key:
+            return Response(
+                {'error': 'Recipient has no RSA public key'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
+            encrypted = encrypt_message(data['plaintext'], recipient.public_key)
             message = Message.objects.create(
                 sender=sender,
                 recipient=recipient,
-                ciphertext=data['ciphertext'],
-                encrypted_key=data['encrypted_key'],
-                nonce=data['nonce'],
-                auth_tag=data['auth_tag'],
+                ciphertext=encrypted['ciphertext'],
+                encrypted_key=encrypted['encrypted_key'],
+                nonce=encrypted['nonce'],
+                auth_tag=encrypted['auth_tag'],
+                signature=data['signature'],
             )
         except Exception as e:
             return Response(
-                {'error': f'Error storing message: {str(e)}'},
+                {'error': f'Error processing message: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -104,65 +111,70 @@ class SendMessageView(APIView):
                 'id': str(message.id),
                 'sender_id': str(message.sender.id),
                 'recipient_id': str(message.recipient.id),
-                'ciphertext': message.ciphertext,
-                'encrypted_key': message.encrypted_key,
-                'nonce': message.nonce,
-                'auth_tag': message.auth_tag,
                 'created_at': message.created_at.isoformat(),
             },
             status=status.HTTP_201_CREATED,
         )
 
     def _send_group_message(self, sender, group_id, data):
-        # Verificar que el remitente es miembro del grupo (mejora de seguridad)
         if not GroupMember.objects.filter(group_id=group_id, user=sender).exists():
             return Response(
                 {'error': 'You are not a member of this group'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Obtener todos los miembros para almacenar un mensaje por miembro (E2E)
         members = (
             GroupMember.objects
             .filter(group_id=group_id)
             .select_related('user')
         )
 
-        # Mapa user_id → encrypted_key enviado por el cliente
-        encrypted_keys_map = {
-            str(item['user_id']): item['encrypted_key']
-            for item in data['encrypted_keys']
-        }
+        plaintext_bytes = data['plaintext'].encode('utf-8')
+
+        # Una sola clave AES y un solo ciphertext para todo el grupo
+        aes_key = generate_aes_key()
+        nonce = generate_nonce()
+        ciphertext_bytes, auth_tag_bytes = encrypt_aes_gcm(plaintext_bytes, aes_key, nonce)
+
+        ciphertext_b64 = base64.b64encode(ciphertext_bytes).decode('utf-8')
+        nonce_b64 = base64.b64encode(nonce).decode('utf-8')
+        auth_tag_b64 = base64.b64encode(auth_tag_bytes).decode('utf-8')
 
         messages = []
         try:
             for member in members:
-                user_id = str(member.user.id)
-                encrypted_key = encrypted_keys_map.get(user_id, '')
+                if not member.user.public_key:
+                    continue
+                encrypted_key_bytes = encrypt_key_rsa_oaep(aes_key, member.user.public_key)
+                encrypted_key_b64 = base64.b64encode(encrypted_key_bytes).decode('utf-8')
 
                 msg = Message.objects.create(
                     sender=sender,
                     recipient=member.user,
                     group_id=group_id,
-                    ciphertext=data['ciphertext'],
-                    encrypted_key=encrypted_key,
-                    nonce=data['nonce'],
-                    auth_tag=data['auth_tag'],
+                    ciphertext=ciphertext_b64,
+                    encrypted_key=encrypted_key_b64,
+                    nonce=nonce_b64,
+                    auth_tag=auth_tag_b64,
+                    signature=data['signature'],
                 )
                 messages.append(msg)
         except Exception as e:
             return Response(
-                {'error': f'Error storing group message: {str(e)}'},
+                {'error': f'Error processing group message: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if not messages:
+            return Response(
+                {'error': 'No valid members with RSA keys found'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         return Response(
             {
                 'group_id': str(group_id),
                 'message_count': len(messages),
-                'ciphertext': data['ciphertext'],
-                'nonce': data['nonce'],
-                'auth_tag': data['auth_tag'],
                 'created_at': messages[0].created_at.isoformat(),
             },
             status=status.HTTP_201_CREATED,
