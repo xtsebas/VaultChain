@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography.hazmat.primitives.serialization import (
     Encoding, PublicFormat, PrivateFormat, NoEncryption,
 )
@@ -76,12 +76,41 @@ class RegisterView(APIView):
             base64.b64encode(ciphertext_with_tag).decode(),
         ])
 
+        # Par de claves ECDSA P-256 para firmas digitales (separado del RSA de cifrado)
+        ecdsa_private_key = ec.generate_private_key(ec.SECP256R1())
+        ecdsa_public_key_pem = ecdsa_private_key.public_key().public_bytes(
+            Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
+        ).decode('utf-8')
+        ecdsa_private_key_der = ecdsa_private_key.private_bytes(
+            Encoding.DER, PrivateFormat.PKCS8, NoEncryption()
+        )
+
+        ecdsa_salt = os.urandom(32)
+        ecdsa_kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=ecdsa_salt,
+            iterations=600_000,
+        )
+        ecdsa_derived_key = ecdsa_kdf.derive(password.encode('utf-8'))
+        ecdsa_nonce = os.urandom(12)
+        ecdsa_aesgcm = AESGCM(ecdsa_derived_key)
+        ecdsa_ciphertext = ecdsa_aesgcm.encrypt(ecdsa_nonce, ecdsa_private_key_der, None)
+
+        encrypted_ecdsa_private_key = ':'.join([
+            base64.b64encode(ecdsa_salt).decode(),
+            base64.b64encode(ecdsa_nonce).decode(),
+            base64.b64encode(ecdsa_ciphertext).decode(),
+        ])
+
         user = User(
             email=email,
             display_name=display_name,
             password_hash=password_hash,
             public_key=public_key_pem,
             encrypted_private_key=encrypted_private_key,
+            ecdsa_public_key=ecdsa_public_key_pem,
+            encrypted_ecdsa_private_key=encrypted_ecdsa_private_key,
         )
         user.set_unusable_password()
         user.save()
@@ -162,6 +191,7 @@ class LoginView(APIView):
                 'token_type': 'Bearer',
                 'expires_in': 3600,
                 'encrypted_private_key': user.encrypted_private_key,
+                'encrypted_ecdsa_private_key': user.encrypted_ecdsa_private_key,
                 'user': {
                     'id': str(user.id),
                     'email': user.email,

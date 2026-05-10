@@ -26,6 +26,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     password_hash = models.CharField(max_length=255)
     public_key = models.TextField()
     encrypted_private_key = models.TextField()
+    ecdsa_public_key = models.TextField(blank=True, default='')
+    encrypted_ecdsa_private_key = models.TextField(blank=True, default='')
     totp_secret = models.CharField(max_length=32, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
