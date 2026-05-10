@@ -1,3 +1,4 @@
+import base64
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -6,6 +7,7 @@ from rest_framework.test import APITestCase
 from django.utils import timezone
 
 from crypto_module.decryption import decrypt_message
+from crypto_module.encryption import encrypt_message
 from crypto_module.models import Message
 from crypto_module.tests.helpers import (
     make_access_token,
@@ -14,6 +16,17 @@ from crypto_module.tests.helpers import (
 )
 
 MESSAGES_URL = '/messages/'
+
+
+def _make_encrypted_payload(plaintext, recipient):
+    """Simula el cifrado que haría el cliente antes de enviar."""
+    encrypted = encrypt_message(plaintext, recipient.public_key)
+    return {
+        'ciphertext': encrypted['ciphertext'],
+        'encrypted_key': encrypted['encrypted_key'],
+        'nonce': encrypted['nonce'],
+        'auth_tag': encrypted['auth_tag'],
+    }
 
 
 class SendMessageFlowTest(APITestCase):
@@ -33,14 +46,25 @@ class SendMessageFlowTest(APITestCase):
     def test_direct_message_can_be_decrypted_end_to_end(self):
         plaintext = 'Mensaje secreto end-to-end'
 
+        # El cliente cifra antes de enviar (E2E)
+        encrypted = encrypt_message(plaintext, self.recipient.public_key)
+
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': str(self.recipient.id), 'plaintext': plaintext},
+            {
+                'recipient_id': str(self.recipient.id),
+                'ciphertext': encrypted['ciphertext'],
+                'encrypted_key': encrypted['encrypted_key'],
+                'nonce': encrypted['nonce'],
+                'auth_tag': encrypted['auth_tag'],
+            },
             format='json',
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         message = Message.objects.get(id=response.json()['id'])
+
+        # El servidor solo almacena — el destinatario descifra con su llave privada
         decrypted = decrypt_message(
             message.ciphertext,
             message.encrypted_key,
@@ -55,13 +79,24 @@ class SendMessageFlowTest(APITestCase):
         self.assertIsNone(message.group_id)
 
     def test_each_send_uses_a_unique_nonce(self):
-        payload = {
-            'recipient_id': str(self.recipient.id),
-            'plaintext': 'Mismo contenido, distinto envio',
-        }
+        plaintext = 'Mismo contenido, distinto envio'
 
-        first_response = self.client.post(MESSAGES_URL, payload, format='json')
-        second_response = self.client.post(MESSAGES_URL, payload, format='json')
+        # Cada llamada a encrypt_message genera nonce distinto (os.urandom)
+        encrypted1 = encrypt_message(plaintext, self.recipient.public_key)
+        encrypted2 = encrypt_message(plaintext, self.recipient.public_key)
+
+        self.assertNotEqual(encrypted1['nonce'], encrypted2['nonce'])
+
+        first_response = self.client.post(
+            MESSAGES_URL,
+            {'recipient_id': str(self.recipient.id), **encrypted1},
+            format='json',
+        )
+        second_response = self.client.post(
+            MESSAGES_URL,
+            {'recipient_id': str(self.recipient.id), **encrypted2},
+            format='json',
+        )
 
         self.assertEqual(first_response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(second_response.status_code, status.HTTP_201_CREATED)
@@ -73,16 +108,16 @@ class SendMessageFlowTest(APITestCase):
         self.assertEqual(len(stored_nonces), 2)
         self.assertEqual(len(set(stored_nonces)), 2)
 
-    @patch('crypto_module.views.encrypt_message', side_effect=Exception('boom'))
-    def test_direct_message_returns_500_when_encryption_fails(self, _mock_encrypt_message):
+    @patch('crypto_module.views.Message.objects.create', side_effect=Exception('boom'))
+    def test_direct_message_returns_500_when_storage_fails(self, _mock_create):
+        encrypted = encrypt_message('irrelevant', self.recipient.public_key)
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': str(self.recipient.id), 'plaintext': 'irrelevant'},
+            {'recipient_id': str(self.recipient.id), **encrypted},
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        self.assertEqual(response.json()['error'], 'Error encrypting message: boom')
+        self.assertIn('Error storing message', response.json()['error'])
 
 
 class SendMessageValidationTest(APITestCase):
@@ -96,13 +131,19 @@ class SendMessageValidationTest(APITestCase):
             display_name='Target',
         )
 
+    def _encrypted_direct_payload(self):
+        encrypted = encrypt_message('hola', self.recipient.public_key)
+        return {
+            'recipient_id': str(self.recipient.id),
+            **encrypted,
+        }
+
     def test_missing_authorization_header_returns_401(self):
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': str(self.recipient.id), 'plaintext': 'hola'},
+            self._encrypted_direct_payload(),
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Missing or invalid Authorization header')
 
@@ -112,51 +153,43 @@ class SendMessageValidationTest(APITestCase):
             expires_delta=timedelta(hours=-1),
         )
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {expired_token}')
-
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': str(self.recipient.id), 'plaintext': 'hola'},
+            self._encrypted_direct_payload(),
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Token has expired')
 
     def test_refresh_token_type_is_rejected(self):
         refresh_token = make_access_token(self.sender, token_type='refresh')
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {refresh_token}')
-
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': str(self.recipient.id), 'plaintext': 'hola'},
+            self._encrypted_direct_payload(),
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Invalid token type')
 
     def test_malformed_token_is_rejected(self):
         self.client.credentials(HTTP_AUTHORIZATION='Bearer invalid.token.value')
-
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': str(self.recipient.id), 'plaintext': 'hola'},
+            self._encrypted_direct_payload(),
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Invalid token')
 
     def test_token_without_user_id_is_rejected(self):
         token = make_token_without_user_id(self.sender)
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
-
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': str(self.recipient.id), 'plaintext': 'hola'},
+            self._encrypted_direct_payload(),
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Invalid token payload')
 
@@ -168,13 +201,11 @@ class SendMessageValidationTest(APITestCase):
         token = make_access_token(ghost_user)
         ghost_user.delete()
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
-
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': str(self.recipient.id), 'plaintext': 'hola'},
+            self._encrypted_direct_payload(),
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'User not found')
 
@@ -182,13 +213,18 @@ class SendMessageValidationTest(APITestCase):
         self.client.credentials(
             HTTP_AUTHORIZATION=f'Bearer {make_access_token(self.sender)}'
         )
-
+        # Sin recipient_id ni group_id, pero con payload cifrado
+        encrypted = encrypt_message('hola', self.recipient.public_key)
         response = self.client.post(
             MESSAGES_URL,
-            {'plaintext': 'hola'},
+            {
+                'ciphertext': encrypted['ciphertext'],
+                'encrypted_key': encrypted['encrypted_key'],
+                'nonce': encrypted['nonce'],
+                'auth_tag': encrypted['auth_tag'],
+            },
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn(
             'Either recipient_id or group_id is required.',
@@ -199,17 +235,16 @@ class SendMessageValidationTest(APITestCase):
         self.client.credentials(
             HTTP_AUTHORIZATION=f'Bearer {make_access_token(self.sender)}'
         )
-
+        encrypted = encrypt_message('hola', self.recipient.public_key)
         response = self.client.post(
             MESSAGES_URL,
             {
                 'recipient_id': str(self.recipient.id),
                 'group_id': str(self.sender.id),
-                'plaintext': 'hola',
+                **encrypted,
             },
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn(
             'Provide either recipient_id or group_id, not both.',
@@ -225,14 +260,14 @@ class SendMessageValidationTest(APITestCase):
             display_name='Ghost Recipient',
         )
         ghost_id = str(ghost_user.id)
+        encrypted = encrypt_message('hola', ghost_user.public_key)
         ghost_user.delete()
 
         response = self.client.post(
             MESSAGES_URL,
-            {'recipient_id': ghost_id, 'plaintext': 'hola'},
+            {'recipient_id': ghost_id, **encrypted},
             format='json',
         )
-
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(response.json()['error'], 'Recipient not found')
 
@@ -304,45 +339,35 @@ class GetUserMessagesTest(APITestCase):
         self.client.credentials(
             HTTP_AUTHORIZATION=f'Bearer {make_access_token(self.sender)}'
         )
-
         response = self.client.get(f'{MESSAGES_URL}{self.recipient.id}')
-
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(response.json()['error'], 'You can only access your own messages')
 
     def test_get_user_messages_requires_authorization(self):
         response = self.client.get(f'{MESSAGES_URL}{self.recipient.id}')
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Missing or invalid Authorization header')
 
     def test_get_user_messages_rejects_expired_token(self):
         expired_token = make_access_token(
-            self.recipient,
-            expires_delta=timedelta(hours=-1),
+            self.recipient, expires_delta=timedelta(hours=-1),
         )
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {expired_token}')
-
         response = self.client.get(f'{MESSAGES_URL}{self.recipient.id}')
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Token has expired')
 
     def test_get_user_messages_rejects_invalid_token_type(self):
         refresh_token = make_access_token(self.recipient, token_type='refresh')
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {refresh_token}')
-
         response = self.client.get(f'{MESSAGES_URL}{self.recipient.id}')
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Invalid token type')
 
     def test_get_user_messages_rejects_token_without_user_id(self):
         token = make_token_without_user_id(self.recipient)
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
-
         response = self.client.get(f'{MESSAGES_URL}{self.recipient.id}')
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Invalid token payload')
 
@@ -354,17 +379,13 @@ class GetUserMessagesTest(APITestCase):
         token = make_access_token(ghost_user)
         ghost_user.delete()
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
-
         response = self.client.get(f'{MESSAGES_URL}{self.recipient.id}')
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'User not found')
 
     def test_get_user_messages_rejects_malformed_token(self):
         self.client.credentials(HTTP_AUTHORIZATION='Bearer invalid.token.value')
-
         response = self.client.get(f'{MESSAGES_URL}{self.recipient.id}')
-
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.json()['error'], 'Invalid token')
 
@@ -373,8 +394,6 @@ class GetUserMessagesTest(APITestCase):
         self.client.credentials(
             HTTP_AUTHORIZATION=f'Bearer {make_access_token(self.recipient)}'
         )
-
         response = self.client.get(f'{MESSAGES_URL}{self.recipient.id}')
-
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
         self.assertEqual(response.json()['error'], 'boom')

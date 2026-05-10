@@ -6,7 +6,6 @@ from django.conf import settings
 class Group(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
-    group_key = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
