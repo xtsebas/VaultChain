@@ -161,6 +161,7 @@ class LoginView(APIView):
                 'refresh_token': refresh_token,
                 'token_type': 'Bearer',
                 'expires_in': 3600,
+                'encrypted_private_key': user.encrypted_private_key,
                 'user': {
                     'id': str(user.id),
                     'email': user.email,
@@ -189,3 +190,24 @@ def get_user_public_key(request, user_id):
         return JsonResponse({"error": "User not found"}, status=404)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def list_users(request):
+    """
+    GET /auth/users/
+    Lista todos los usuarios registrados (id, email, display_name).
+    Usado por el frontend para seleccionar destinatarios.
+    """
+    users = User.objects.all().values('id', 'email', 'display_name')
+    return JsonResponse({
+        'users': [
+            {
+                'id': str(u['id']),
+                'email': u['email'],
+                'display_name': u['display_name'],
+            }
+            for u in users
+        ]
+    })
