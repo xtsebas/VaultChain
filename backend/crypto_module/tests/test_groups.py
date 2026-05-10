@@ -104,7 +104,7 @@ class CreateGroupTest(APITestCase):
 
 class GroupMessageFlowTest(APITestCase):
     def setUp(self):
-        self.sender, _ = make_crypto_user(
+        self.sender, self.sender_private_key = make_crypto_user(
             email='owner@example.com',
             display_name='Owner',
         )
@@ -126,6 +126,7 @@ class GroupMessageFlowTest(APITestCase):
             {
                 'name': 'Equipo de cifrado',
                 'member_ids': [
+                    str(self.sender.id),
                     str(self.recipient_one.id),
                     str(self.recipient_two.id),
                 ],
@@ -136,7 +137,9 @@ class GroupMessageFlowTest(APITestCase):
         return resp.json()['id']
 
     def _build_group_payload(self, plaintext, group_id):
-        """Simula el cifrado grupal que haría el cliente (E2E)."""
+        """Simula el cifrado grupal que haría el cliente (E2E).
+        El sender cifra la clave AES para cada miembro del grupo, incluyéndose a sí mismo.
+        """
         aes_key = generate_aes_key()
         nonce = generate_nonce()
         ciphertext_bytes, auth_tag_bytes = encrypt_aes_gcm(
@@ -149,6 +152,12 @@ class GroupMessageFlowTest(APITestCase):
             'nonce': base64.b64encode(nonce).decode(),
             'auth_tag': base64.b64encode(auth_tag_bytes).decode(),
             'encrypted_keys': [
+                {
+                    'user_id': str(self.sender.id),
+                    'encrypted_key': base64.b64encode(
+                        encrypt_key_rsa_oaep(aes_key, self.sender.public_key)
+                    ).decode(),
+                },
                 {
                     'user_id': str(self.recipient_one.id),
                     'encrypted_key': base64.b64encode(
@@ -173,23 +182,24 @@ class GroupMessageFlowTest(APITestCase):
         send_response = self.client.post(MESSAGES_URL, payload, format='json')
 
         self.assertEqual(send_response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(send_response.json()['message_count'], 2)
+        self.assertEqual(send_response.json()['message_count'], 3)
 
         messages = list(Message.objects.filter(group_id=group_id).order_by('recipient__email'))
-        self.assertEqual(len(messages), 2)
+        self.assertEqual(len(messages), 3)
         self.assertEqual(
             {str(message.recipient_id) for message in messages},
-            {str(self.recipient_one.id), str(self.recipient_two.id)},
+            {str(self.sender.id), str(self.recipient_one.id), str(self.recipient_two.id)},
         )
         # Mismo ciphertext, mismo nonce, mismo auth_tag para todos
         self.assertEqual(len({message.ciphertext for message in messages}), 1)
         self.assertEqual(len({message.nonce for message in messages}), 1)
         self.assertEqual(len({message.auth_tag for message in messages}), 1)
         # Encrypted key diferente por miembro
-        self.assertEqual(len({message.encrypted_key for message in messages}), 2)
+        self.assertEqual(len({message.encrypted_key for message in messages}), 3)
 
-        # Verificación E2E: cada destinatario descifra con su llave privada
+        # Verificación E2E: cada miembro descifra con su llave privada
         private_keys = {
+            str(self.sender.id): self.sender_private_key,
             str(self.recipient_one.id): self.recipient_one_private_key,
             str(self.recipient_two.id): self.recipient_two_private_key,
         }
@@ -228,12 +238,13 @@ class GroupMessageFlowTest(APITestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.json()['error'], 'Group not found or has no members')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.json()['error'], 'You are not a member of this group')
 
     @patch('crypto_module.views.Message.objects.create', side_effect=Exception('boom'))
     def test_group_message_returns_500_when_storage_fails(self, _mock_create):
         group = Group.objects.create(name='Equipo')
+        GroupMember.objects.create(group=group, user=self.sender)
         GroupMember.objects.create(group=group, user=self.recipient_one)
 
         aes_key = generate_aes_key()

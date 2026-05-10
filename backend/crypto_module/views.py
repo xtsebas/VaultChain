@@ -114,16 +114,19 @@ class SendMessageView(APIView):
         )
 
     def _send_group_message(self, sender, group_id, data):
+        # Verificar que el remitente es miembro del grupo (mejora de seguridad)
+        if not GroupMember.objects.filter(group_id=group_id, user=sender).exists():
+            return Response(
+                {'error': 'You are not a member of this group'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Obtener todos los miembros para almacenar un mensaje por miembro (E2E)
         members = (
             GroupMember.objects
             .filter(group_id=group_id)
             .select_related('user')
         )
-        if not members.exists():
-            return Response(
-                {'error': 'Group not found or has no members'},
-                status=status.HTTP_404_NOT_FOUND,
-            )
 
         # Mapa user_id → encrypted_key enviado por el cliente
         encrypted_keys_map = {
@@ -171,6 +174,7 @@ class CreateGroupView(APIView):
         """
         POST /groups/
         Crea un grupo con los miembros indicados.
+        El cliente es responsable de la distribución de claves (E2E).
         """
         sender, error = _authenticate_request(request)
         if error:
@@ -222,6 +226,7 @@ def get_group(request, group_id):
     """
     GET /groups/{group_id}
     Retorna info del grupo con miembros y sus llaves públicas.
+    El cliente usa las llaves públicas para cifrar la clave AES (E2E).
     """
     try:
         group = Group.objects.get(id=group_id)

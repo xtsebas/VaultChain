@@ -56,7 +56,7 @@ class Message(models.Model):
     )
     group_id = models.UUIDField(null=True, blank=True)
     ciphertext = models.TextField()
-    encrypted_key = models.TextField()
+    encrypted_key = models.TextField(blank=True, default='')
     nonce = models.CharField(max_length=24)
     auth_tag = models.CharField(max_length=24)
     signature = models.TextField(null=True, blank=True)
