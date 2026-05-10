@@ -4,8 +4,14 @@ from unittest.mock import patch
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from crypto_module.encryption import encrypt_message
 from crypto_module.decryption import decrypt_message
+from crypto_module.encryption import (
+    encrypt_message,
+    generate_aes_key,
+    generate_nonce,
+    encrypt_aes_gcm,
+    encrypt_key_rsa_oaep,
+)
 from crypto_module.models import Group, GroupMember, Message
 from crypto_module.tests.helpers import make_access_token, make_crypto_user
 
@@ -47,6 +53,9 @@ class CreateGroupTest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.json()['name'], 'Equipo de cifrado')
         self.assertEqual(len(response.json()['members']), 2)
+        # La respuesta ahora incluye public_key de cada miembro
+        for member in response.json()['members']:
+            self.assertIn('public_key', member)
 
         group = Group.objects.get(id=response.json()['id'])
         self.assertEqual(group.name, 'Equipo de cifrado')
@@ -111,8 +120,8 @@ class GroupMessageFlowTest(APITestCase):
             HTTP_AUTHORIZATION=f'Bearer {make_access_token(self.sender)}'
         )
 
-    def test_group_message_is_created_for_multiple_recipients(self):
-        group_response = self.client.post(
+    def _create_group(self):
+        resp = self.client.post(
             GROUPS_URL,
             {
                 'name': 'Equipo de cifrado',
@@ -123,16 +132,45 @@ class GroupMessageFlowTest(APITestCase):
             },
             format='json',
         )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        return resp.json()['id']
 
-        self.assertEqual(group_response.status_code, status.HTTP_201_CREATED)
-        group_id = group_response.json()['id']
-
-        plaintext = 'Mensaje para todo el grupo'
-        send_response = self.client.post(
-            MESSAGES_URL,
-            {'group_id': group_id, 'plaintext': plaintext},
-            format='json',
+    def _build_group_payload(self, plaintext, group_id):
+        """Simula el cifrado grupal que haría el cliente (E2E)."""
+        aes_key = generate_aes_key()
+        nonce = generate_nonce()
+        ciphertext_bytes, auth_tag_bytes = encrypt_aes_gcm(
+            plaintext.encode('utf-8'), aes_key, nonce
         )
+
+        return {
+            'group_id': group_id,
+            'ciphertext': base64.b64encode(ciphertext_bytes).decode(),
+            'nonce': base64.b64encode(nonce).decode(),
+            'auth_tag': base64.b64encode(auth_tag_bytes).decode(),
+            'encrypted_keys': [
+                {
+                    'user_id': str(self.recipient_one.id),
+                    'encrypted_key': base64.b64encode(
+                        encrypt_key_rsa_oaep(aes_key, self.recipient_one.public_key)
+                    ).decode(),
+                },
+                {
+                    'user_id': str(self.recipient_two.id),
+                    'encrypted_key': base64.b64encode(
+                        encrypt_key_rsa_oaep(aes_key, self.recipient_two.public_key)
+                    ).decode(),
+                },
+            ],
+        }
+
+    def test_group_message_is_created_for_multiple_recipients(self):
+        group_id = self._create_group()
+        plaintext = 'Mensaje para todo el grupo'
+
+        # Cliente cifra: un AES key, ciphertext único, encrypted_key por miembro
+        payload = self._build_group_payload(plaintext, group_id)
+        send_response = self.client.post(MESSAGES_URL, payload, format='json')
 
         self.assertEqual(send_response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(send_response.json()['message_count'], 2)
@@ -143,58 +181,86 @@ class GroupMessageFlowTest(APITestCase):
             {str(message.recipient_id) for message in messages},
             {str(self.recipient_one.id), str(self.recipient_two.id)},
         )
-        self.assertEqual(
-            {message.ciphertext for message in messages},
-            {send_response.json()['ciphertext']},
-        )
-        self.assertEqual(
-            {message.nonce for message in messages},
-            {send_response.json()['nonce']},
-        )
-        self.assertEqual(
-            {message.auth_tag for message in messages},
-            {send_response.json()['auth_tag']},
-        )
+        # Mismo ciphertext, mismo nonce, mismo auth_tag para todos
+        self.assertEqual(len({message.ciphertext for message in messages}), 1)
+        self.assertEqual(len({message.nonce for message in messages}), 1)
+        self.assertEqual(len({message.auth_tag for message in messages}), 1)
+        # Encrypted key diferente por miembro
         self.assertEqual(len({message.encrypted_key for message in messages}), 2)
 
-        private_keys_by_recipient = {
+        # Verificación E2E: cada destinatario descifra con su llave privada
+        private_keys = {
             str(self.recipient_one.id): self.recipient_one_private_key,
             str(self.recipient_two.id): self.recipient_two_private_key,
         }
-
         for message in messages:
             decrypted = decrypt_message(
                 message.ciphertext,
                 message.encrypted_key,
                 message.nonce,
                 message.auth_tag,
-                private_keys_by_recipient[str(message.recipient_id)],
+                private_keys[str(message.recipient_id)],
             ).decode('utf-8')
             self.assertEqual(decrypted, plaintext)
 
     def test_group_message_returns_404_for_unknown_group(self):
+        fake_group_id = str(self.sender.id)  # UUID que no es un grupo
+        aes_key = generate_aes_key()
+        nonce = generate_nonce()
+        ciphertext_bytes, auth_tag_bytes = encrypt_aes_gcm(b'hola', aes_key, nonce)
+
         response = self.client.post(
             MESSAGES_URL,
-            {'group_id': str(self.sender.id), 'plaintext': 'hola grupo'},
+            {
+                'group_id': fake_group_id,
+                'ciphertext': base64.b64encode(ciphertext_bytes).decode(),
+                'nonce': base64.b64encode(nonce).decode(),
+                'auth_tag': base64.b64encode(auth_tag_bytes).decode(),
+                'encrypted_keys': [
+                    {
+                        'user_id': str(self.recipient_one.id),
+                        'encrypted_key': base64.b64encode(
+                            encrypt_key_rsa_oaep(aes_key, self.recipient_one.public_key)
+                        ).decode(),
+                    }
+                ],
+            },
             format='json',
         )
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(response.json()['error'], 'Group not found or has no members')
 
-    @patch('crypto_module.views.encrypt_key_rsa_oaep', side_effect=Exception('boom'))
-    def test_group_message_returns_500_when_encryption_fails(self, _mock_encrypt_key):
+    @patch('crypto_module.views.Message.objects.create', side_effect=Exception('boom'))
+    def test_group_message_returns_500_when_storage_fails(self, _mock_create):
         group = Group.objects.create(name='Equipo')
         GroupMember.objects.create(group=group, user=self.recipient_one)
 
+        aes_key = generate_aes_key()
+        nonce = generate_nonce()
+        ciphertext_bytes, auth_tag_bytes = encrypt_aes_gcm(b'hola', aes_key, nonce)
+
         response = self.client.post(
             MESSAGES_URL,
-            {'group_id': str(group.id), 'plaintext': 'hola grupo'},
+            {
+                'group_id': str(group.id),
+                'ciphertext': base64.b64encode(ciphertext_bytes).decode(),
+                'nonce': base64.b64encode(nonce).decode(),
+                'auth_tag': base64.b64encode(auth_tag_bytes).decode(),
+                'encrypted_keys': [
+                    {
+                        'user_id': str(self.recipient_one.id),
+                        'encrypted_key': base64.b64encode(
+                            encrypt_key_rsa_oaep(aes_key, self.recipient_one.public_key)
+                        ).decode(),
+                    }
+                ],
+            },
             format='json',
         )
 
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        self.assertEqual(response.json()['error'], 'Error encrypting group message: boom')
+        self.assertIn('Error storing group message', response.json()['error'])
 
 
 class CryptoIntegrityTest(APITestCase):
@@ -203,10 +269,7 @@ class CryptoIntegrityTest(APITestCase):
             email='integrity@example.com',
             display_name='Integrity',
         )
-        encrypted_data = encrypt_message(
-            'mensaje integro',
-            recipient.public_key,
-        )
+        encrypted_data = encrypt_message('mensaje integro', recipient.public_key)
 
         auth_tag_bytes = bytearray(base64.b64decode(encrypted_data['auth_tag']))
         auth_tag_bytes[0] ^= 1
@@ -244,11 +307,5 @@ class CryptoModelTest(APITestCase):
         )
 
         self.assertEqual(str(group), 'Modelo')
-        self.assertEqual(
-            str(membership),
-            f'GroupMember {recipient.id} in {group.id}',
-        )
-        self.assertEqual(
-            str(message),
-            f'Message {message.id} from {sender.id}',
-        )
+        self.assertEqual(str(membership), f'GroupMember {recipient.id} in {group.id}')
+        self.assertEqual(str(message), f'Message {message.id} from {sender.id}')
