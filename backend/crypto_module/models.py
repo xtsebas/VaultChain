@@ -60,6 +60,7 @@ class Message(models.Model):
     nonce = models.CharField(max_length=24)
     auth_tag = models.CharField(max_length=24)
     signature = models.TextField(null=True, blank=True)
+    signature_verified = models.BooleanField(null=True, blank=True, default=None)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

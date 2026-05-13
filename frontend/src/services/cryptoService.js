@@ -284,3 +284,36 @@ export async function decryptMessage(message, rsaPrivateKey) {
   log(SUCCESS, 'Mensaje descifrado exitosamente', `"${plaintext.slice(0, 60)}${plaintext.length > 60 ? '…' : ''}"`);
   return plaintext;
 }
+
+// ─── firma ECDSA de mensajes ──────────────────────────────────────────────────
+
+/** Importa llave privada ECDSA P-256 (PKCS8 DER → CryptoKey). */
+export async function importECDSAPrivateKey(pkcs8DerBytes) {
+  log(CRYPTO, 'Importando llave privada ECDSA P-256 (PKCS8 DER → CryptoKey)…');
+  const key = await crypto.subtle.importKey(
+    'pkcs8',
+    pkcs8DerBytes,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['sign'],
+  );
+  log(KEY, 'Llave privada ECDSA importada');
+  return key;
+}
+
+/**
+ * Firma el plaintext con ECDSA P-256/SHA-256.
+ * Produce formato P1363 (r||s, 64 bytes) — el backend acepta este formato.
+ * @returns {string} firma en Base64
+ */
+export async function signMessageECDSA(plaintext, ecdsaPrivKey) {
+  log(CRYPTO, `Firmando mensaje con ECDSA P-256/SHA-256 (${plaintext.length} chars)…`);
+  const sigBuf = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    ecdsaPrivKey,
+    new TextEncoder().encode(plaintext),
+  );
+  const sigB64 = toB64(sigBuf);
+  log(KEY, 'Firma ECDSA generada', `${sigBuf.byteLength} bytes`);
+  return sigB64;
+}
