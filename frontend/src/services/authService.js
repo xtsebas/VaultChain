@@ -33,6 +33,10 @@ export function saveSession(data, password) {
   if (data.encrypted_private_key) {
     sessionStorage.setItem('encrypted_private_key', data.encrypted_private_key);
   }
+  // encrypted_ecdsa_private_key: salt:nonce:ciphertext — necesario para firmar mensajes
+  if (data.encrypted_ecdsa_private_key) {
+    sessionStorage.setItem('encrypted_ecdsa_private_key', data.encrypted_ecdsa_private_key);
+  }
   const expiresAt = Date.now() + data.expires_in * 1000;
   localStorage.setItem('expires_at', String(expiresAt));
   // Guardar contraseña en memoria (no en storage) para derivar llave privada
@@ -56,6 +60,10 @@ export function getEncryptedPrivateKey() {
   return sessionStorage.getItem('encrypted_private_key');
 }
 
+export function getEncryptedECDSAPrivateKey() {
+  return sessionStorage.getItem('encrypted_ecdsa_private_key');
+}
+
 /** Retorna la contraseña en memoria (para derivar llave privada). Puede ser null. */
 export function getSessionPassword() {
   return _sessionPassword;
@@ -67,5 +75,6 @@ export function clearTokens() {
   localStorage.removeItem('session_user');
   localStorage.removeItem('expires_at');
   sessionStorage.removeItem('encrypted_private_key');
+  sessionStorage.removeItem('encrypted_ecdsa_private_key');
   _sessionPassword = null;
 }
