@@ -37,16 +37,17 @@ export async function getUserPublicKey(userId) {
 }
 
 /**
- * Envía un mensaje directo ya cifrado por el cliente.
+ * Envía un mensaje directo firmado con ECDSA.
+ * El servidor cifra el plaintext con RSA-OAEP + AES-256-GCM.
  * @param {string} recipientId
- * @param {{ ciphertext, encrypted_key, nonce, auth_tag }} encryptedPayload
+ * @param {{ plaintext: string, signature: string }} payload
  */
-export async function sendDirectMessage(recipientId, encryptedPayload) {
+export async function sendDirectMessage(recipientId, payload) {
   log(NETWORK, `POST /messages/ → destinatario ${recipientId.slice(0, 8)}…`);
   const res = await fetch(`${API}/messages/`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ recipient_id: recipientId, ...encryptedPayload }),
+    body: JSON.stringify({ recipient_id: recipientId, ...payload }),
   });
   const data = await res.json();
   if (!res.ok) throw { status: res.status, data };
@@ -55,20 +56,44 @@ export async function sendDirectMessage(recipientId, encryptedPayload) {
 }
 
 /**
- * Envía un mensaje grupal ya cifrado por el cliente.
+ * Envía un mensaje grupal firmado con ECDSA.
+ * El servidor cifra el plaintext para cada miembro del grupo.
  * @param {string} groupId
- * @param {{ ciphertext, nonce, auth_tag, encrypted_keys }} groupPayload
+ * @param {{ plaintext: string, signature: string }} payload
  */
-export async function sendGroupMessage(groupId, groupPayload) {
+export async function sendGroupMessage(groupId, payload) {
   log(NETWORK, `POST /messages/ → grupo ${groupId.slice(0, 8)}…`);
   const res = await fetch(`${API}/messages/`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ group_id: groupId, ...groupPayload }),
+    body: JSON.stringify({ group_id: groupId, ...payload }),
   });
   const data = await res.json();
   if (!res.ok) throw { status: res.status, data };
   log(SUCCESS, `Mensaje grupal almacenado — ${data.message_count} copias`);
+  return data;
+}
+
+/**
+ * Verifica la firma ECDSA de un mensaje.
+ * El cliente envía el plaintext ya descifrado; el servidor verifica y persiste el resultado.
+ * @param {string} msgId
+ * @param {string} plaintext
+ * @returns {{ message_id: string, verified: boolean, reason?: string }}
+ */
+export async function verifyMessageSignature(msgId, plaintext) {
+  log(NETWORK, `GET /messages/${msgId.slice(0, 8)}…/verify — verificando firma ECDSA…`);
+  const res = await fetch(`${API}/messages/${msgId}/verify`, {
+    method: 'GET',
+    headers: authHeaders(),
+    body: JSON.stringify({ plaintext }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, data };
+  log(
+    data.verified ? SUCCESS : ERROR,
+    `Firma ECDSA ${data.verified ? 'VÁLIDA ✓' : 'INVÁLIDA ✗'} — msg ${msgId.slice(0, 8)}…`,
+  );
   return data;
 }
 
