@@ -3,14 +3,17 @@
  */
 import { useEffect, useState } from 'react';
 import {
-  encryptMessage, encryptGroupMessage,
   decryptMessage, decryptPrivateKey, importRSAPrivateKey,
+  importECDSAPrivateKey, signMessageECDSA,
 } from '../services/cryptoService';
 import {
-  listUsers, getUserPublicKey, sendDirectMessage,
-  sendGroupMessage, getMyMessages, createGroup,
+  listUsers, sendDirectMessage, sendGroupMessage,
+  getMyMessages, createGroup, verifyMessageSignature,
 } from '../services/messageService';
-import { getSessionUser, getEncryptedPrivateKey } from '../services/authService';
+import {
+  getSessionUser, getEncryptedPrivateKey,
+  getEncryptedECDSAPrivateKey, getSessionPassword,
+} from '../services/authService';
 import { log, LOG_TYPES } from '../services/cryptoLog';
 
 function initials(name = '') {
@@ -29,15 +32,20 @@ function ComposeDialog({ onClose, users, onSent }) {
     if (!recipientId || !plaintext.trim()) return;
     setLoading(true); setError(''); setSuccess('');
     try {
-      log(LOG_TYPES.INFO, '=== INICIO FLUJO CIFRADO DIRECTO ===');
-      const publicKeyPem = await getUserPublicKey(recipientId);
-      const encrypted    = await encryptMessage(plaintext, publicKeyPem);
-      await sendDirectMessage(recipientId, encrypted);
-      setSuccess('¡Mensaje enviado y cifrado correctamente!');
+      log(LOG_TYPES.INFO, '=== INICIO FLUJO FIRMA + ENVÍO DIRECTO ===');
+      const password = getSessionPassword();
+      if (!password) throw new Error('Sesión de firma expirada. Cierra sesión e inicia sesión de nuevo.');
+      const encECDSA = getEncryptedECDSAPrivateKey();
+      if (!encECDSA) throw new Error('Llave ECDSA no disponible. Vuelve a iniciar sesión.');
+      const pkcs8Der  = await decryptPrivateKey(encECDSA, password);
+      const ecdsaKey  = await importECDSAPrivateKey(pkcs8Der);
+      const signature = await signMessageECDSA(plaintext, ecdsaKey);
+      await sendDirectMessage(recipientId, { plaintext, signature });
+      setSuccess('¡Mensaje firmado y enviado! El servidor lo cifró con RSA-OAEP + AES-256-GCM.');
       setPlaintext('');
       onSent?.();
     } catch (e) {
-      const msg = e?.data?.error || e?.message || 'Error al cifrar/enviar';
+      const msg = e?.data?.error || e?.message || 'Error al firmar/enviar';
       log(LOG_TYPES.ERROR, `Error en envío: ${msg}`);
       setError(msg);
     } finally {
@@ -65,9 +73,9 @@ function ComposeDialog({ onClose, users, onSent }) {
             <label>Mensaje (plaintext)</label>
             <textarea
               rows={4} value={plaintext} onChange={(e) => setPlaintext(e.target.value)}
-              placeholder="Escribe tu mensaje. Se cifrará con AES-256-GCM + RSA-OAEP antes de salir de tu navegador."
+              placeholder="Escribe tu mensaje. Se firmará con tu llave ECDSA y el servidor lo cifrará con AES-256-GCM + RSA-OAEP."
             />
-            <span className="helper">El servidor nunca verá el contenido en texto plano.</span>
+            <span className="helper">Tu navegador firma el mensaje con ECDSA. El cifrado RSA-OAEP lo realiza el servidor.</span>
           </div>
         </div>
         <div className="modal-footer">
@@ -77,7 +85,7 @@ function ComposeDialog({ onClose, users, onSent }) {
             onClick={handleSend}
             disabled={loading || !recipientId || !plaintext.trim()}
           >
-            {loading ? <span className="spinner" /> : '📤 Cifrar y enviar'}
+            {loading ? <span className="spinner" /> : '✍️ Firmar y enviar'}
           </button>
         </div>
       </div>
@@ -122,14 +130,20 @@ function GroupDialog({ onClose, users, onSent }) {
     if (!plaintext.trim()) return;
     setLoading(true); setError(''); setSuccess('');
     try {
-      log(LOG_TYPES.INFO, '=== INICIO FLUJO CIFRADO GRUPAL ===');
-      const payload = await encryptGroupMessage(plaintext, groupMembers);
-      await sendGroupMessage(groupId, payload);
-      setSuccess(`¡Mensaje grupal enviado a ${groupMembers.length} miembros!`);
+      log(LOG_TYPES.INFO, '=== INICIO FLUJO FIRMA + ENVÍO GRUPAL ===');
+      const password = getSessionPassword();
+      if (!password) throw new Error('Sesión de firma expirada. Cierra sesión e inicia sesión de nuevo.');
+      const encECDSA = getEncryptedECDSAPrivateKey();
+      if (!encECDSA) throw new Error('Llave ECDSA no disponible. Vuelve a iniciar sesión.');
+      const pkcs8Der  = await decryptPrivateKey(encECDSA, password);
+      const ecdsaKey  = await importECDSAPrivateKey(pkcs8Der);
+      const signature = await signMessageECDSA(plaintext, ecdsaKey);
+      const result    = await sendGroupMessage(groupId, { plaintext, signature });
+      setSuccess(`¡Mensaje grupal enviado a ${result.message_count} miembros!`);
       setPlaintext('');
       onSent?.();
     } catch (e) {
-      const msg = e?.data?.error || e?.message || 'Error al cifrar/enviar';
+      const msg = e?.data?.error || e?.message || 'Error al firmar/enviar';
       log(LOG_TYPES.ERROR, `Error en envío grupal: ${msg}`);
       setError(msg);
     } finally {
@@ -170,7 +184,7 @@ function GroupDialog({ onClose, users, onSent }) {
               <div className="field">
                 <label>Mensaje grupal (plaintext)</label>
                 <textarea rows={4} value={plaintext} onChange={(e) => setPlaintext(e.target.value)} />
-                <span className="helper">Se generará 1 ciphertext y {groupMembers.length} encrypted_keys.</span>
+                <span className="helper">El servidor cifrará el mensaje para cada uno de los {groupMembers.length} miembro(s).</span>
               </div>
             </>
           )}
@@ -203,23 +217,37 @@ function GroupDialog({ onClose, users, onSent }) {
 
 // ── Diálogo descifrado ─────────────────────────────────────────────────────────
 function DecryptDialog({ message, onClose }) {
-  const [password, setPassword]   = useState('');
-  const [showPass, setShowPass]   = useState(false);
-  const [decrypted, setDecrypted] = useState('');
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState('');
+  const [password, setPassword]     = useState('');
+  const [showPass, setShowPass]     = useState(false);
+  const [decrypted, setDecrypted]   = useState('');
+  const [loading, setLoading]       = useState(false);
+  const [verifying, setVerifying]   = useState(false);
+  const [sigResult, setSigResult]   = useState(null); // { verified, reason? }
+  const [error, setError]           = useState('');
 
   async function handleDecrypt() {
     if (!password) return;
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setSigResult(null);
     try {
       log(LOG_TYPES.INFO, '=== INICIO FLUJO DESCIFRADO ===');
       const encPrivKey = getEncryptedPrivateKey();
       if (!encPrivKey) throw new Error('Llave privada no disponible. Vuelve a iniciar sesión.');
-      const pkcs8Der  = await decryptPrivateKey(encPrivKey, password);
+      const pkcs8Der   = await decryptPrivateKey(encPrivKey, password);
       const rsaPrivKey = await importRSAPrivateKey(pkcs8Der);
       const plaintext  = await decryptMessage(message, rsaPrivKey);
       setDecrypted(plaintext);
+
+      // Verificar firma ECDSA contra el servidor
+      setVerifying(true);
+      try {
+        log(LOG_TYPES.INFO, '=== VERIFICANDO FIRMA ECDSA ===');
+        const result = await verifyMessageSignature(message.id, plaintext);
+        setSigResult(result);
+      } catch {
+        setSigResult({ verified: false, reason: 'verify_error' });
+      } finally {
+        setVerifying(false);
+      }
     } catch (e) {
       const msg = e?.message || 'Error al descifrar. ¿Contraseña incorrecta?';
       log(LOG_TYPES.ERROR, `Error descifrado: ${msg}`);
@@ -229,17 +257,36 @@ function DecryptDialog({ message, onClose }) {
     }
   }
 
+  function SigBadge() {
+    if (verifying) return <div className="alert alert-info">Verificando firma ECDSA…</div>;
+    if (!sigResult) return null;
+    if (sigResult.verified) {
+      return <div className="alert alert-success">✅ Firma ECDSA verificada — autenticidad e integridad confirmadas.</div>;
+    }
+    const reasons = {
+      no_signature: 'El mensaje no tiene firma ECDSA.',
+      no_ecdsa_key: 'El remitente no tiene llave ECDSA registrada.',
+      invalid_signature: 'La firma ECDSA no es válida.',
+      verify_error: 'No se pudo contactar el servidor para verificar.',
+    };
+    return (
+      <div className="alert alert-error">
+        ⚠️ Firma NO verificada — {reasons[sigResult.reason] || 'resultado desconocido'}
+      </div>
+    );
+  }
+
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal">
-        <div className="modal-header">🔓 Descifrar mensaje</div>
+        <div className="modal-header">🔓 Descifrar y verificar mensaje</div>
         <div className="modal-body">
           {error && <div className="alert alert-error">{error}</div>}
 
           {!decrypted ? (
             <>
               <div className="alert alert-info">
-                Introduce tu contraseña para derivar la llave privada y descifrar el mensaje.
+                Introduce tu contraseña para descifrar el mensaje y verificar la firma ECDSA.
               </div>
               <div className="field">
                 <label>Tu contraseña</label>
@@ -260,6 +307,7 @@ function DecryptDialog({ message, onClose }) {
           ) : (
             <>
               <div className="alert alert-success">Mensaje descifrado exitosamente.</div>
+              <SigBadge />
               <div className="decrypt-box">
                 <div className="decrypt-label">Contenido original:</div>
                 <p>{decrypted}</p>
@@ -275,7 +323,7 @@ function DecryptDialog({ message, onClose }) {
               onClick={handleDecrypt}
               disabled={loading || !password}
             >
-              {loading ? <span className="spinner" /> : '🔓 Descifrar'}
+              {loading ? <span className="spinner" /> : '🔓 Descifrar y verificar'}
             </button>
           )}
         </div>
