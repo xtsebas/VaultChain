@@ -14,6 +14,7 @@ from .encryption import encrypt_message, generate_aes_key, generate_nonce, encry
 from .models import Group, GroupMember, Message
 from .decorators import jwt_required
 from .serializers import SendMessageSerializer, CreateGroupSerializer
+from signatures.ecdsa_utils import verify_signature
 
 
 def _authenticate_request(request):
@@ -230,6 +231,57 @@ class CreateGroupView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+@jwt_required
+def verify_message(request, msg_id):
+    """
+    GET /messages/{msg_id}/verify
+    El cliente descifra el mensaje localmente y envía el plaintext.
+    El servidor verifica la firma ECDSA del remitente y persiste el resultado.
+
+    Body: { "plaintext": "<texto descifrado>" }
+    Response: { "message_id": str, "verified": bool, "reason"?: str }
+    """
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({'error': 'Invalid JSON body'}, status=400)
+
+    plaintext = body.get('plaintext')
+    if plaintext is None:
+        return JsonResponse({'error': 'plaintext is required'}, status=400)
+
+    try:
+        message = Message.objects.select_related('sender').get(id=msg_id)
+    except Message.DoesNotExist:
+        return JsonResponse({'error': 'Message not found'}, status=404)
+
+    if str(request.user.id) != str(message.recipient_id):
+        return JsonResponse({'error': 'Access denied'}, status=403)
+
+    verified = False
+    reason = None
+
+    if not message.signature:
+        reason = 'no_signature'
+    elif not message.sender.ecdsa_public_key:
+        reason = 'no_ecdsa_key'
+    else:
+        plaintext_bytes = plaintext.encode('utf-8') if isinstance(plaintext, str) else plaintext
+        verified = verify_signature(plaintext_bytes, message.signature, message.sender.ecdsa_public_key)
+        if not verified:
+            reason = 'invalid_signature'
+
+    message.signature_verified = verified
+    message.save(update_fields=['signature_verified'])
+
+    response = {'message_id': str(msg_id), 'verified': verified}
+    if reason:
+        response['reason'] = reason
+    return JsonResponse(response, status=200)
 
 
 @csrf_exempt
