@@ -15,6 +15,10 @@ from .models import Group, GroupMember, Message
 from .decorators import jwt_required
 from .serializers import SendMessageSerializer, CreateGroupSerializer
 from signatures.ecdsa_utils import verify_signature
+from blockchain.chain import append_block
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 def _authenticate_request(request):
@@ -107,6 +111,12 @@ class SendMessageView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        # Registro automático en el blockchain
+        try:
+            append_block(sender.id, recipient.id, data['plaintext'])
+        except Exception as exc:
+            logger.error('Blockchain append failed for message %s: %s', message.id, exc)
+
         return Response(
             {
                 'id': str(message.id),
@@ -171,6 +181,12 @@ class SendMessageView(APIView):
                 {'error': 'No valid members with RSA keys found'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Registro automático en el blockchain — un bloque por evento grupal
+        try:
+            append_block(sender.id, None, data['plaintext'])
+        except Exception as exc:
+            logger.error('Blockchain append failed for group %s: %s', group_id, exc)
 
         return Response(
             {
