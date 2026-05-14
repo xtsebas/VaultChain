@@ -10,6 +10,9 @@ Cubre:
   6. Enviar dos mensajes produce cadena de 3 bloques (genesis + 2) con hashes íntegros
   7. Enviar un mensaje grupal registra un bloque en el blockchain
   8. Concurrencia: append_block() no genera índices duplicados
+  9. GET /blockchain/ retorna la cadena completa con estructura correcta
+ 10. GET /blockchain/verify/ valida la cadena íntegra
+ 11. GET /blockchain/verify/ detecta hash adulterado y enlace roto
 """
 import hashlib
 import threading
@@ -26,8 +29,10 @@ from crypto_module.tests.helpers import make_crypto_user, make_access_token
 from crypto_module.models import Group, GroupMember
 
 
-MESSAGES_URL = '/messages/'
-GROUPS_URL   = '/groups/'
+MESSAGES_URL    = '/messages/'
+GROUPS_URL      = '/groups/'
+BLOCKCHAIN_URL  = '/blockchain/'
+VERIFY_URL      = '/blockchain/verify/'
 
 
 # ── Utilidades ────────────────────────────────────────────────────────────────
@@ -281,3 +286,154 @@ class ConcurrentAppendTest(TransactionTestCase):
         self.assertEqual(errors, [], f'Errors during concurrent appends: {errors}')
         indexes = list(Block.objects.exclude(index=0).values_list('index', flat=True))
         self.assertEqual(len(indexes), len(set(indexes)), 'Duplicate indexes found')
+
+
+# ── 7. GET /blockchain/ ───────────────────────────────────────────────────────
+
+class GetChainAPITest(APITestCase):
+    """
+    Flujo real: dos usuarios se envían mensajes → se consulta GET /blockchain/
+    y se verifica que la respuesta refleja exactamente el estado de la BD.
+    """
+    def setUp(self):
+        self.alice, _ = make_crypto_user(email='gc_alice@test.com', display_name='Alice')
+        self.bob,   _ = make_crypto_user(email='gc_bob@test.com',   display_name='Bob')
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {make_access_token(self.alice)}'
+        )
+
+    def test_chain_endpoint_returns_200(self):
+        resp = self.client.get(BLOCKCHAIN_URL)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+    def test_chain_includes_genesis_block(self):
+        resp = self.client.get(BLOCKCHAIN_URL)
+        data = resp.json()
+        self.assertIn('chain', data)
+        genesis = data['chain'][0]
+        self.assertEqual(genesis['index'], 0)
+        self.assertEqual(genesis['previous_hash'], '0' * 64)
+
+    def test_chain_length_grows_after_messages(self):
+        before = self.client.get(BLOCKCHAIN_URL).json()['length']
+
+        for i in range(3):
+            self.client.post(MESSAGES_URL, {
+                'recipient_id': str(self.bob.id),
+                'plaintext':    f'Hola Bob número {i}',
+                'signature':    'fake-sig',
+            }, format='json')
+
+        after = self.client.get(BLOCKCHAIN_URL).json()['length']
+        self.assertEqual(after, before + 3)
+
+    def test_chain_block_structure_has_required_fields(self):
+        self.client.post(MESSAGES_URL, {
+            'recipient_id': str(self.bob.id),
+            'plaintext':    'Mensaje de estructura',
+            'signature':    'fake-sig',
+        }, format='json')
+
+        data  = self.client.get(BLOCKCHAIN_URL).json()
+        block = data['chain'][-1]  # el bloque recién creado
+
+        for field in ('index', 'timestamp', 'sender_id', 'recipient_id',
+                      'message_hash', 'previous_hash', 'nonce', 'hash'):
+            self.assertIn(field, block, f'Campo "{field}" ausente en el bloque')
+
+    def test_chain_blocks_are_ordered_by_index(self):
+        for i in range(2):
+            self.client.post(MESSAGES_URL, {
+                'recipient_id': str(self.bob.id),
+                'plaintext':    f'Orden {i}',
+                'signature':    'fake-sig',
+            }, format='json')
+
+        chain = self.client.get(BLOCKCHAIN_URL).json()['chain']
+        indexes = [b['index'] for b in chain]
+        self.assertEqual(indexes, sorted(indexes))
+
+    def test_chain_length_matches_db_count(self):
+        self.client.post(MESSAGES_URL, {
+            'recipient_id': str(self.bob.id),
+            'plaintext':    'Conteo',
+            'signature':    'fake-sig',
+        }, format='json')
+
+        data = self.client.get(BLOCKCHAIN_URL).json()
+        self.assertEqual(data['length'], Block.objects.count())
+
+
+# ── 8. GET /blockchain/verify/ ────────────────────────────────────────────────
+
+class VerifyChainAPITest(APITestCase):
+    """
+    Flujo real en tres escenarios:
+      A) Cadena íntegra tras enviar mensajes  → valid=True
+      B) Bloque con hash adulterado           → valid=False, reason=hash_mismatch
+      C) Bloque con previous_hash roto        → valid=False, reason=broken_link
+    """
+    def setUp(self):
+        self.alice, _ = make_crypto_user(email='vc_alice@test.com', display_name='Alice')
+        self.bob,   _ = make_crypto_user(email='vc_bob@test.com',   display_name='Bob')
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {make_access_token(self.alice)}'
+        )
+
+    def _send(self, text):
+        self.client.post(MESSAGES_URL, {
+            'recipient_id': str(self.bob.id),
+            'plaintext':    text,
+            'signature':    'fake-sig',
+        }, format='json')
+
+    # ── A: cadena íntegra ────────────────────────────────────────────────────
+
+    def test_verify_returns_200(self):
+        resp = self.client.get(VERIFY_URL)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+    def test_verify_intact_chain_is_valid(self):
+        self._send('Primero')
+        self._send('Segundo')
+        self._send('Tercero')
+
+        data = self.client.get(VERIFY_URL).json()
+        self.assertTrue(data['valid'])
+        self.assertEqual(data['length'], Block.objects.count())
+
+    # ── B: hash adulterado ───────────────────────────────────────────────────
+
+    def test_verify_detects_tampered_hash(self):
+        self._send('Mensaje antes de adulteración')
+        victim = Block.objects.order_by('-index').first()
+
+        # Adulteramos el hash almacenado directamente en BD
+        Block.objects.filter(pk=victim.pk).update(hash='a' * 64)
+
+        data = self.client.get(VERIFY_URL).json()
+        self.assertFalse(data['valid'])
+        self.assertEqual(data['reason'], 'hash_mismatch')
+        self.assertEqual(data['failed_at_index'], victim.index)
+
+    # ── C: enlace roto (previous_hash incorrecto) ────────────────────────────
+
+    def test_verify_detects_broken_link(self):
+        self._send('Bloque A')
+        self._send('Bloque B')
+        victim = Block.objects.order_by('-index').first()
+
+        # Rompemos el enlace pero mantenemos el hash internamente consistente:
+        # previous_hash apunta a un bloque inexistente, y recalculamos hash
+        # con ese nuevo previous_hash para que hash_mismatch NO se dispare.
+        victim.previous_hash = 'b' * 64
+        new_hash = victim.compute_hash()
+        Block.objects.filter(pk=victim.pk).update(
+            previous_hash='b' * 64,
+            hash=new_hash,
+        )
+
+        data = self.client.get(VERIFY_URL).json()
+        self.assertFalse(data['valid'])
+        self.assertEqual(data['reason'], 'broken_link')
+        self.assertEqual(data['failed_at_index'], victim.index)
