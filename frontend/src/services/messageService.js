@@ -84,7 +84,7 @@ export async function sendGroupMessage(groupId, payload) {
 export async function verifyMessageSignature(msgId, plaintext) {
   log(NETWORK, `GET /messages/${msgId.slice(0, 8)}…/verify — verificando firma ECDSA…`);
   const res = await fetch(`${API}/messages/${msgId}/verify`, {
-    method: 'GET',
+    method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({ plaintext }),
   });
