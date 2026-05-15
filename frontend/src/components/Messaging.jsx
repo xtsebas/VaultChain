@@ -215,8 +215,18 @@ function GroupDialog({ onClose, users, onSent }) {
   );
 }
 
+// ── Badge de firma en la lista ─────────────────────────────────────────────────
+function SigListBadge({ msg }) {
+  if (!msg.has_signature) return null;
+  if (msg.signature_verified === true)
+    return <span className="sig-badge sig-badge-ok">✓ Firma válida</span>;
+  if (msg.signature_verified === false)
+    return <span className="sig-badge sig-badge-err">⚠ INVÁLIDA</span>;
+  return <span className="sig-badge sig-badge-pending">◌ Sin verificar</span>;
+}
+
 // ── Diálogo descifrado ─────────────────────────────────────────────────────────
-function DecryptDialog({ message, onClose }) {
+function DecryptDialog({ message, onClose, onRefresh }) {
   const [password, setPassword]     = useState('');
   const [showPass, setShowPass]     = useState(false);
   const [decrypted, setDecrypted]   = useState('');
@@ -243,6 +253,7 @@ function DecryptDialog({ message, onClose }) {
         log(LOG_TYPES.INFO, '=== VERIFICANDO FIRMA ECDSA ===');
         const result = await verifyMessageSignature(message.id, plaintext);
         setSigResult(result);
+        onRefresh?.();
       } catch {
         setSigResult({ verified: false, reason: 'verify_error' });
       } finally {
@@ -386,17 +397,32 @@ export default function Messaging() {
         </button>
       </div>
 
+      {messages.some((m) => m.signature_verified === false) && (
+        <div className="sig-alert-banner">
+          <span>⚠️</span>
+          <span>
+            <strong>Alerta de seguridad:</strong> Uno o más mensajes tienen una firma ECDSA inválida.
+            Su autenticidad e integridad no pueden ser confirmadas.
+          </span>
+        </div>
+      )}
+
       <div className="msg-list">
         {messages.length === 0 && !loadingMsgs && (
           <div className="msg-empty">Sin mensajes. Los mensajes cifrados aparecerán aquí.</div>
         )}
         {messages.map((msg) => (
-          <div key={msg.id} className="msg-item">
+          <div
+            key={msg.id}
+            className="msg-item"
+            style={msg.signature_verified === false ? { background: '#fff5f5' } : undefined}
+          >
             <div className="av-sm">{initials(msg.sender_name || '?')}</div>
             <div className="msg-meta">
               <div className="msg-sender">
                 {msg.sender_name || msg.sender_email || msg.sender_id?.slice(0, 8)}
                 {msg.group_id && <span className="badge">Grupal</span>}
+                <SigListBadge msg={msg} />
               </div>
               <div className="msg-cipher">{msg.ciphertext.slice(0, 48)}…</div>
               <div className="msg-date">{formatDate(msg.created_at)}</div>
@@ -420,7 +446,7 @@ export default function Messaging() {
         <GroupDialog users={users} onClose={() => setGroupOpen(false)} onSent={fetchMessages} />
       )}
       {decryptMsg && (
-        <DecryptDialog message={decryptMsg} onClose={() => setDecryptMsg(null)} />
+        <DecryptDialog message={decryptMsg} onClose={() => setDecryptMsg(null)} onRefresh={fetchMessages} />
       )}
     </div>
   );
