@@ -8,6 +8,8 @@ services:
       POSTGRES_DB: vaultchain_db
       POSTGRES_USER: vaultchain_user
       POSTGRES_PASSWORD: vaultchain_password
+    ports:
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -38,7 +40,7 @@ services:
     volumes:
       - ./frontend:/app
     ports:
-      - "5173:5173"
+      - "3000:5173"
     command: sh -c "npm install && npm run dev -- --host"
     depends_on:
       - backend

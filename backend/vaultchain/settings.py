@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'auth_module',
     'crypto_module',
+    'blockchain',
 ]
 
 AUTH_USER_MODEL = 'auth_module.User'
@@ -51,6 +52,8 @@ AUTH_USER_MODEL = 'auth_module.User'
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
 ]
 
 MIDDLEWARE = [

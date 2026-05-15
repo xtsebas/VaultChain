@@ -2,13 +2,20 @@ from rest_framework import serializers
 
 
 class SendMessageSerializer(serializers.Serializer):
-    recipient_id = serializers.UUIDField(required=False)
-    group_id = serializers.UUIDField(required=False)
+    # Destino: exactamente uno
+    recipient_id = serializers.UUIDField(required=False, allow_null=True)
+    group_id = serializers.UUIDField(required=False, allow_null=True)
+
+    # Plaintext: el servidor cifra; el cliente firma antes de enviar
     plaintext = serializers.CharField(required=True)
+
+    # Firma ECDSA del SHA-256(plaintext), generada por el cliente antes de cifrar
+    signature = serializers.CharField(required=True)
 
     def validate(self, data):
         has_recipient = bool(data.get('recipient_id'))
         has_group = bool(data.get('group_id'))
+
         if not has_recipient and not has_group:
             raise serializers.ValidationError("Either recipient_id or group_id is required.")
         if has_recipient and has_group:
