@@ -1,4 +1,5 @@
 import base64
+import json
 import jwt
 
 from django.conf import settings
@@ -250,7 +251,7 @@ class CreateGroupView(APIView):
 
 
 @csrf_exempt
-@require_http_methods(["GET"])
+@require_http_methods(["GET", "POST"])
 @jwt_required
 def verify_message(request, msg_id):
     """
@@ -365,6 +366,8 @@ def get_user_messages(request, user_id):
                 'nonce': msg.nonce,
                 'auth_tag': msg.auth_tag,
                 'signature': msg.signature,
+                'has_signature': bool(msg.signature),
+                'signature_verified': msg.signature_verified,
                 'created_at': msg.created_at.isoformat(),
             }
             for msg in messages
