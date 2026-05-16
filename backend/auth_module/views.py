@@ -1,8 +1,11 @@
+import io
 import os
 import base64
 from datetime import datetime, timedelta
 
 import jwt
+import pyotp
+import qrcode
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
@@ -24,6 +27,68 @@ from rest_framework import status
 
 from .models import User
 from .serializers import RegisterSerializer, LoginSerializer
+
+
+def _get_authenticated_user(request):
+    """
+    Extrae y valida el JWT del header Authorization.
+    Retorna (user, None) si es válido, o (None, Response de error) si falla.
+    """
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return None, Response(
+            {'error': 'Missing or invalid Authorization header'},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    token = auth_header.split(' ')[1]
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
+    except jwt.ExpiredSignatureError:
+        return None, Response({'error': 'Token has expired'}, status=status.HTTP_401_UNAUTHORIZED)
+    except jwt.InvalidTokenError:
+        return None, Response({'error': 'Invalid token'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if payload.get('type') != 'access':
+        return None, Response({'error': 'Invalid token type'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    user_id = payload.get('user_id')
+    if not user_id:
+        return None, Response({'error': 'Invalid token payload'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return None, Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    return user, None
+
+
+def _issue_tokens(user):
+    """Genera y retorna access y refresh JWT para el usuario."""
+    now = datetime.utcnow()
+    access_token = jwt.encode(
+        {
+            'user_id': str(user.id),
+            'email': user.email,
+            'exp': now + timedelta(hours=1),
+            'iat': now,
+            'type': 'access',
+        },
+        settings.SECRET_KEY,
+        algorithm='HS256',
+    )
+    refresh_token = jwt.encode(
+        {
+            'user_id': str(user.id),
+            'exp': now + timedelta(days=7),
+            'iat': now,
+            'type': 'refresh',
+        },
+        settings.SECRET_KEY,
+        algorithm='HS256',
+    )
+    return access_token, refresh_token
 
 
 class RegisterView(APIView):
@@ -158,31 +223,16 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        now = datetime.utcnow()
-        access_token_payload = {
-            'user_id': str(user.id),
-            'email': user.email,
-            'exp': now + timedelta(hours=1),
-            'iat': now,
-            'type': 'access',
-        }
-        refresh_token_payload = {
-            'user_id': str(user.id),
-            'exp': now + timedelta(days=7),
-            'iat': now,
-            'type': 'refresh',
-        }
+        if user.totp_secret:
+            return Response(
+                {
+                    'mfa_required': True,
+                    'email': user.email,
+                },
+                status=status.HTTP_200_OK,
+            )
 
-        access_token = jwt.encode(
-            access_token_payload,
-            settings.SECRET_KEY,
-            algorithm='HS256'
-        )
-        refresh_token = jwt.encode(
-            refresh_token_payload,
-            settings.SECRET_KEY,
-            algorithm='HS256'
-        )
+        access_token, refresh_token = _issue_tokens(user)
 
         return Response(
             {
@@ -197,6 +247,101 @@ class LoginView(APIView):
                     'email': user.email,
                     'display_name': user.display_name,
                 }
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class MFAEnableView(APIView):
+    """
+    POST /auth/mfa/enable
+    Genera un secreto TOTP, lo guarda en totp_secret del usuario y retorna
+    el secreto, la URI de aprovisionamiento y un QR compatible con Google Authenticator.
+    Requiere JWT válido.
+    """
+    def post(self, request):
+        user, error = _get_authenticated_user(request)
+        if error:
+            return error
+
+        secret = pyotp.random_base32()
+        user.totp_secret = secret
+        user.save(update_fields=['totp_secret'])
+
+        totp = pyotp.TOTP(secret)
+        provisioning_uri = totp.provisioning_uri(
+            name=user.email,
+            issuer_name='VaultChain',
+        )
+
+        qr_img = qrcode.make(provisioning_uri)
+        buffer = io.BytesIO()
+        qr_img.save(buffer, format='PNG')
+        qr_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+        return Response(
+            {
+                'secret': secret,
+                'provisioning_uri': provisioning_uri,
+                'qr_code': f'data:image/png;base64,{qr_base64}',
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class MFAVerifyView(APIView):
+    """
+    POST /auth/mfa/verify
+    Verifica el código TOTP ingresado durante el flujo de login.
+    Body: { "email": "...", "totp_code": "123456" }
+    Si el código es válido emite los tokens JWT completos.
+    """
+    def post(self, request):
+        email = request.data.get('email')
+        totp_code = request.data.get('totp_code')
+
+        if not email or not totp_code:
+            return Response(
+                {'error': 'email and totp_code are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'Invalid credentials'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if not user.totp_secret:
+            return Response(
+                {'error': 'MFA is not enabled for this user'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        totp = pyotp.TOTP(user.totp_secret)
+        if not totp.verify(totp_code, valid_window=1):
+            return Response(
+                {'error': 'Invalid or expired TOTP code'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        access_token, refresh_token = _issue_tokens(user)
+
+        return Response(
+            {
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'token_type': 'Bearer',
+                'expires_in': 3600,
+                'encrypted_private_key': user.encrypted_private_key,
+                'encrypted_ecdsa_private_key': user.encrypted_ecdsa_private_key,
+                'user': {
+                    'id': str(user.id),
+                    'email': user.email,
+                    'display_name': user.display_name,
+                },
             },
             status=status.HTTP_200_OK,
         )
