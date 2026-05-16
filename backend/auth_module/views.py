@@ -347,6 +347,71 @@ class MFAVerifyView(APIView):
         )
 
 
+class RefreshTokenView(APIView):
+    """
+    POST /auth/token/refresh
+    Emite un nuevo access token a partir de un refresh token válido.
+    Body: { "refresh_token": "..." }
+    """
+    def post(self, request):
+        refresh_token = request.data.get('refresh_token')
+        if not refresh_token:
+            return Response(
+                {'error': 'refresh_token is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payload = jwt.decode(refresh_token, settings.SECRET_KEY, algorithms=['HS256'])
+        except jwt.ExpiredSignatureError:
+            return Response(
+                {'error': 'Refresh token has expired'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except jwt.InvalidTokenError:
+            return Response(
+                {'error': 'Invalid refresh token'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if payload.get('type') != 'refresh':
+            return Response(
+                {'error': 'Invalid token type'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        user_id = payload.get('user_id')
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        now = datetime.utcnow()
+        access_token = jwt.encode(
+            {
+                'user_id': str(user.id),
+                'email': user.email,
+                'exp': now + timedelta(hours=1),
+                'iat': now,
+                'type': 'access',
+            },
+            settings.SECRET_KEY,
+            algorithm='HS256',
+        )
+
+        return Response(
+            {
+                'access_token': access_token,
+                'token_type': 'Bearer',
+                'expires_in': 3600,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 @csrf_exempt
 @require_http_methods(["GET"])
 def get_user_public_key(request, user_id):
