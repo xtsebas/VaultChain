@@ -8,6 +8,8 @@ from auth_module.models import User
 _PUBLIC_PATHS = frozenset([
     '/auth/register',
     '/auth/login',
+    '/auth/mfa/verify',    
+    '/auth/token/refresh', 
 ])
 
 # Prefijos públicos (rutas que empiezan con estos no requieren JWT)
