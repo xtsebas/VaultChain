@@ -1,19 +1,21 @@
 version: '3.9'
 
 services:
+
   db:
     image: postgres:15
     container_name: vaultchain_db
+    env_file: .env
     environment:
-      POSTGRES_DB: vaultchain_db
-      POSTGRES_USER: vaultchain_user
-      POSTGRES_PASSWORD: vaultchain_password
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vaultchain_user -d vaultchain_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -21,10 +23,12 @@ services:
   backend:
     build: .
     container_name: vaultchain_backend
+    env_file: .env
     environment:
-      DEBUG: "1"
-      DATABASE_URL: postgresql://vaultchain_user:vaultchain_password@db:5432/vaultchain_db
-      SECRET_KEY: change-this-in-production
+      DEBUG:        ${DEBUG}
+      SECRET_KEY:   ${SECRET_KEY}
+      DATABASE_URL: ${DATABASE_URL}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
     ports:
       - "8000:8000"
     depends_on:
@@ -32,18 +36,28 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/auth/users/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   frontend:
     image: node:22
     container_name: vaultchain_frontend
     working_dir: /app
+    env_file: .env
+    environment:
+      VITE_API_URL: ${VITE_API_URL}
     volumes:
       - ./frontend:/app
     ports:
       - "3000:5173"
     command: sh -c "npm install && npm run dev -- --host"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:
