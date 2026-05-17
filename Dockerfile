@@ -5,16 +5,16 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     libpq-dev \
     gcc \
+    curl \
     && rm -rf /var/lib/apt/lists/*
-
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"]
+# pip install + migrate corren en cada `docker-compose up` sin necesidad de rebuild.
+# Cambios en requirements.txt o nuevas migraciones se aplican automáticamente.
+CMD ["sh", "-c", "pip install --quiet -r requirements.txt && python manage.py migrate && python manage.py runserver 0.0.0.0:8000"]
