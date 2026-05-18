@@ -69,6 +69,35 @@ export function getSessionPassword() {
   return _sessionPassword;
 }
 
+export async function enableMFA() {
+  const res = await fetch(`${API_BASE}/auth/mfa/enable`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${getToken()}`,
+    },
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, data };
+  return data; // { secret, provisioning_uri, qr_code }
+}
+
+export async function verifyMFACode(email, totpCode) {
+  const res = await fetch(`${API_BASE}/auth/mfa/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, totp_code: totpCode }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, data };
+  return data; // { access_token, refresh_token, user, ... }
+}
+
+export function updateSessionUser(updates) {
+  const user = getSessionUser();
+  if (user) localStorage.setItem('session_user', JSON.stringify({ ...user, ...updates }));
+}
+
 export function clearTokens() {
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
