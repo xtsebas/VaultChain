@@ -246,6 +246,7 @@ class LoginView(APIView):
                     'id': str(user.id),
                     'email': user.email,
                     'display_name': user.display_name,
+                    'mfa_enabled': bool(user.totp_secret),
                 }
             },
             status=status.HTTP_200_OK,
@@ -341,6 +342,7 @@ class MFAVerifyView(APIView):
                     'id': str(user.id),
                     'email': user.email,
                     'display_name': user.display_name,
+                    'mfa_enabled': bool(user.totp_secret),
                 },
             },
             status=status.HTTP_200_OK,
