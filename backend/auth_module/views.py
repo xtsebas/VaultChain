@@ -223,7 +223,7 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        if user.totp_secret:
+        if user.mfa_enabled:
             return Response(
                 {
                     'mfa_required': True,
@@ -246,7 +246,7 @@ class LoginView(APIView):
                     'id': str(user.id),
                     'email': user.email,
                     'display_name': user.display_name,
-                    'mfa_enabled': bool(user.totp_secret),
+                    'mfa_enabled': user.mfa_enabled,
                 }
             },
             status=status.HTTP_200_OK,
@@ -315,7 +315,7 @@ class MFAVerifyView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        if not user.totp_secret:
+        if not user.mfa_enabled or not user.totp_secret:
             return Response(
                 {'error': 'MFA is not enabled for this user'},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -342,11 +342,96 @@ class MFAVerifyView(APIView):
                     'id': str(user.id),
                     'email': user.email,
                     'display_name': user.display_name,
-                    'mfa_enabled': bool(user.totp_secret),
+                    'mfa_enabled': user.mfa_enabled,
                 },
             },
             status=status.HTTP_200_OK,
         )
+
+
+class MFAConfirmView(APIView):
+    """
+    POST /auth/mfa/confirm
+    Segundo paso del setup de MFA: verifica que el usuario tiene el secreto
+    configurado en su app y activa mfa_enabled = True.
+    Requiere JWT válido.
+    Body: { "totp_code": "123456" }
+    """
+    def post(self, request):
+        user, error = _get_authenticated_user(request)
+        if error:
+            return error
+
+        totp_code = request.data.get('totp_code')
+        if not totp_code:
+            return Response({'error': 'totp_code is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.totp_secret:
+            return Response(
+                {'error': 'No pending MFA setup. Call /auth/mfa/enable first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if user.mfa_enabled:
+            return Response({'error': 'MFA is already active'}, status=status.HTTP_400_BAD_REQUEST)
+
+        totp = pyotp.TOTP(user.totp_secret)
+        if not totp.verify(totp_code, valid_window=1):
+            return Response(
+                {'error': 'Invalid or expired TOTP code. Make sure you scanned the QR correctly.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        user.mfa_enabled = True
+        user.save(update_fields=['mfa_enabled'])
+
+        access_token, refresh_token = _issue_tokens(user)
+
+        return Response(
+            {
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'token_type': 'Bearer',
+                'expires_in': 3600,
+                'encrypted_private_key': user.encrypted_private_key,
+                'encrypted_ecdsa_private_key': user.encrypted_ecdsa_private_key,
+                'user': {
+                    'id': str(user.id),
+                    'email': user.email,
+                    'display_name': user.display_name,
+                    'mfa_enabled': True,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class MFADisableView(APIView):
+    """
+    POST /auth/mfa/disable
+    Desactiva MFA del usuario. Requiere JWT válido + contraseña actual.
+    Body: { "password": "..." }
+    """
+    def post(self, request):
+        user, error = _get_authenticated_user(request)
+        if error:
+            return error
+
+        password = request.data.get('password')
+        if not password:
+            return Response({'error': 'password is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        ph = PasswordHasher()
+        try:
+            ph.verify(user.password_hash, password)
+        except VerifyMismatchError:
+            return Response({'error': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        user.totp_secret = None
+        user.mfa_enabled = False
+        user.save(update_fields=['totp_secret', 'mfa_enabled'])
+
+        return Response({'message': 'MFA disabled successfully'}, status=status.HTTP_200_OK)
 
 
 class RefreshTokenView(APIView):

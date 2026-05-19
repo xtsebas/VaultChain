@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   clearTokens, getSessionUser, getExpiresAt,
-  enableMFA, verifyMFACode, saveSession, updateSessionUser,
+  enableMFA, confirmMFA, disableMFA, saveSession, updateSessionUser,
   getSessionPassword,
 } from '../services/authService';
 
@@ -52,7 +52,7 @@ function MFASetupModal({ user, onClose, onActivated }) {
     setLoading(true);
     setError('');
     try {
-      const data = await verifyMFACode(user.email, totpInput);
+      const data = await confirmMFA(totpInput);
       const password = getSessionPassword();
       saveSession(data, password);
       updateSessionUser({ mfa_enabled: true });
@@ -154,6 +154,72 @@ function MFASetupModal({ user, onClose, onActivated }) {
   );
 }
 
+// ── Modal de desactivación MFA ─────────────────────────────────────────────────
+function MFADisableModal({ onClose, onDisabled }) {
+  const [password, setPassword]   = useState('');
+  const [showPass, setShowPass]   = useState(false);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState('');
+
+  async function handleDisable(e) {
+    e.preventDefault();
+    if (!password) return;
+    setLoading(true); setError('');
+    try {
+      await disableMFA(password);
+      updateSessionUser({ mfa_enabled: false });
+      onDisabled();
+      onClose();
+    } catch (e) {
+      setError(e?.data?.error || 'Contraseña incorrecta.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">🔓 Desactivar MFA</div>
+        <div className="modal-body">
+          <div className="alert alert-info">
+            Confirma tu contraseña para desactivar la autenticación de dos factores.
+          </div>
+          {error && <div className="alert alert-error">{error}</div>}
+          <form onSubmit={handleDisable}>
+            <div className="field">
+              <label>Contraseña actual</label>
+              <div className="field-input-wrap">
+                <input
+                  type={showPass ? 'text' : 'password'}
+                  className="has-eye"
+                  value={password}
+                  autoFocus
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <button type="button" className="eye-btn" onClick={() => setShowPass((s) => !s)}>
+                  {showPass ? '🙈' : '👁'}
+                </button>
+              </div>
+            </div>
+            <button
+              type="submit"
+              className="btn btn-full mt-2"
+              style={{ background: '#c62828', color: '#fff' }}
+              disabled={loading || !password}
+            >
+              {loading ? <span className="spinner" /> : 'Desactivar MFA'}
+            </button>
+          </form>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── SessionWidget principal ────────────────────────────────────────────────────
 export default function SessionWidget({ open, onClose }) {
   const navigate = useNavigate();
@@ -161,7 +227,8 @@ export default function SessionWidget({ open, onClose }) {
   const expiresAt = getExpiresAt();
   const intervalRef = useRef(null);
   const [, setTick] = useState(0);
-  const [showMFASetup, setShowMFASetup] = useState(false);
+  const [showMFASetup, setShowMFASetup]       = useState(false);
+  const [showMFADisable, setShowMFADisable]   = useState(false);
 
   if (!user || !open) return null;
 
@@ -181,9 +248,8 @@ export default function SessionWidget({ open, onClose }) {
     navigate('/login');
   }
 
-  function handleMFAActivated() {
-    setUser(getSessionUser());
-  }
+  function handleMFAActivated() { setUser(getSessionUser()); }
+  function handleMFADisabled()  { setUser(getSessionUser()); }
 
   const nearExpiry = expiresAt - Date.now() < 120_000;
 
@@ -224,7 +290,16 @@ export default function SessionWidget({ open, onClose }) {
             <div style={{ flex: 1 }}>
               <div className="popover-label">Autenticación MFA</div>
               {user.mfa_enabled ? (
-                <div className="popover-value" style={{ color: '#2e7d32', fontWeight: 600 }}>Activo</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <div className="popover-value" style={{ color: '#2e7d32', fontWeight: 600 }}>Activo</div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    style={{ color: '#c62828', padding: '2px 6px', fontSize: 11 }}
+                    onClick={() => setShowMFADisable(true)}
+                  >
+                    Desactivar
+                  </button>
+                </div>
               ) : (
                 <button
                   className="btn btn-outline-sec btn-sm"
@@ -248,6 +323,12 @@ export default function SessionWidget({ open, onClose }) {
           user={user}
           onClose={() => setShowMFASetup(false)}
           onActivated={handleMFAActivated}
+        />
+      )}
+      {showMFADisable && (
+        <MFADisableModal
+          onClose={() => setShowMFADisable(false)}
+          onDisabled={handleMFADisabled}
         />
       )}
     </>

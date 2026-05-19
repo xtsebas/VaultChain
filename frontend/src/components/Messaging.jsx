@@ -1,7 +1,7 @@
 /**
  * Messaging.jsx — UI de mensajería E2E sin dependencias externas de UI.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   decryptMessage, decryptPrivateKey, importRSAPrivateKey,
   importECDSAPrivateKey, signMessageECDSA,
@@ -18,6 +18,117 @@ import { log, LOG_TYPES } from '../services/cryptoLog';
 
 function initials(name = '') {
   return name.split(' ').slice(0, 2).map((w) => w[0]?.toUpperCase()).join('');
+}
+
+// ── People Picker (chips + búsqueda) ─────────────────────────────────────────
+function PeoplePicker({ users, selected, onChange, fixedUser }) {
+  const [query, setQuery]           = useState('');
+  const [open, setOpen]             = useState(false);
+  const [dropdownPos, setDropdownPos] = useState({});
+  const inputRef                    = useRef(null);
+  const boxRef                      = useRef(null);
+
+  const filtered = users.filter(
+    (u) =>
+      !selected.includes(u.id) &&
+      (!query.trim() ||
+        u.display_name.toLowerCase().includes(query.toLowerCase()) ||
+        u.email.toLowerCase().includes(query.toLowerCase())),
+  );
+
+  function openWithPos() {
+    if (boxRef.current) {
+      const r = boxRef.current.getBoundingClientRect();
+      setDropdownPos({ top: r.bottom + 4, left: r.left, width: r.width });
+    }
+    setOpen(true);
+  }
+
+  useEffect(() => {
+    function onDown(e) {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+
+  function add(user) {
+    onChange([...selected, user.id]);
+    setQuery('');
+    inputRef.current?.focus();
+  }
+
+  function remove(id) {
+    onChange(selected.filter((x) => x !== id));
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'Backspace' && !query && selected.length > 0) remove(selected[selected.length - 1]);
+    if (e.key === 'Escape') setOpen(false);
+  }
+
+  const selectedUsers = users.filter((u) => selected.includes(u.id));
+  const showDropdown  = open && (filtered.length > 0 || query.trim());
+
+  return (
+    <div className="pp-wrap">
+      <div
+        ref={boxRef}
+        className="pp-box"
+        onClick={() => { openWithPos(); inputRef.current?.focus(); }}
+      >
+        <span className="pp-chip pp-chip-me" title={fixedUser?.email}>
+          {fixedUser?.display_name} <span className="pp-chip-you">(tú)</span>
+        </span>
+
+        {selectedUsers.map((u) => (
+          <span key={u.id} className="pp-chip">
+            {u.display_name}
+            <button
+              type="button"
+              className="pp-chip-remove"
+              onClick={(e) => { e.stopPropagation(); remove(u.id); }}
+              tabIndex={-1}
+            >×</button>
+          </span>
+        ))}
+
+        <input
+          ref={inputRef}
+          className="pp-input"
+          value={query}
+          placeholder={selected.length === 0 ? 'Busca por nombre o correo…' : ''}
+          onChange={(e) => { setQuery(e.target.value); openWithPos(); }}
+          onFocus={openWithPos}
+          onKeyDown={handleKeyDown}
+        />
+      </div>
+
+      {showDropdown && (
+        <div
+          className="pp-dropdown"
+          style={{ position: 'fixed', top: dropdownPos.top, left: dropdownPos.left, width: dropdownPos.width }}
+        >
+          {filtered.map((u) => (
+            <div
+              key={u.id}
+              className="pp-option"
+              onMouseDown={(e) => { e.preventDefault(); add(u); }}
+            >
+              <div className="pp-option-av">{u.display_name[0]?.toUpperCase()}</div>
+              <div className="pp-option-info">
+                <span className="pp-option-name">{u.display_name}</span>
+                <span className="pp-option-email">{u.email}</span>
+              </div>
+            </div>
+          ))}
+          {filtered.length === 0 && (
+            <div className="pp-empty">Sin resultados para "{query}"</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Compose directo ───────────────────────────────────────────────────────────
@@ -95,6 +206,7 @@ function ComposeDialog({ onClose, users, onSent }) {
 
 // ── Compose grupal ─────────────────────────────────────────────────────────────
 function GroupDialog({ onClose, users, onSent }) {
+  const me = getSessionUser();
   const [groupName, setGroupName]       = useState('');
   const [memberIds, setMemberIds]       = useState([]);
   const [plaintext, setPlaintext]       = useState('');
@@ -105,17 +217,14 @@ function GroupDialog({ onClose, users, onSent }) {
   const [error, setError]               = useState('');
   const [success, setSuccess]           = useState('');
 
-  function handleSelectMembers(e) {
-    const opts = Array.from(e.target.selectedOptions).map((o) => o.value);
-    setMemberIds(opts);
-  }
-
   async function handleCreateGroup() {
     if (!groupName.trim() || memberIds.length === 0) return;
     setLoading(true); setError('');
     try {
       log(LOG_TYPES.INFO, '=== CREANDO GRUPO ===');
-      const group = await createGroup(groupName, memberIds);
+      // El usuario actual siempre se incluye como miembro
+      const allMembers = [...new Set([me.id, ...memberIds])];
+      const group = await createGroup(groupName, allMembers);
       setGroupId(group.id);
       setGroupMembers(group.members);
       setStep('created');
@@ -163,15 +272,27 @@ function GroupDialog({ onClose, users, onSent }) {
             <>
               <div className="field">
                 <label>Nombre del grupo</label>
-                <input value={groupName} onChange={(e) => setGroupName(e.target.value)} />
+                <input
+                  value={groupName}
+                  onChange={(e) => setGroupName(e.target.value)}
+                  placeholder="Ej. Equipo Presupuesto 2025"
+                  autoFocus
+                />
               </div>
+
               <div className="field">
-                <label>Miembros (Ctrl+click para seleccionar varios)</label>
-                <select multiple value={memberIds} onChange={handleSelectMembers}>
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id}>{u.display_name} — {u.email}</option>
-                  ))}
-                </select>
+                <label>Destinatarios</label>
+                <PeoplePicker
+                  users={users}
+                  selected={memberIds}
+                  onChange={setMemberIds}
+                  fixedUser={me}
+                />
+                {memberIds.length > 0 && (
+                  <span className="helper">
+                    {memberIds.length} destinatario(s) + tú = {memberIds.length + 1} miembro(s) en total
+                  </span>
+                )}
               </div>
             </>
           )}
@@ -183,7 +304,7 @@ function GroupDialog({ onClose, users, onSent }) {
               </div>
               <div className="field">
                 <label>Mensaje grupal (plaintext)</label>
-                <textarea rows={4} value={plaintext} onChange={(e) => setPlaintext(e.target.value)} />
+                <textarea rows={4} value={plaintext} onChange={(e) => setPlaintext(e.target.value)} autoFocus />
                 <span className="helper">El servidor cifrará el mensaje para cada uno de los {groupMembers.length} miembro(s).</span>
               </div>
             </>

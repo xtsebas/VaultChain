@@ -29,6 +29,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     ecdsa_public_key = models.TextField(blank=True, default='')
     encrypted_ecdsa_private_key = models.TextField(blank=True, default='')
     totp_secret = models.CharField(max_length=32, blank=True, null=True)
+    mfa_enabled = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     is_active = models.BooleanField(default=True)

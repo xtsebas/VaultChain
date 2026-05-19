@@ -93,6 +93,28 @@ export async function verifyMFACode(email, totpCode) {
   return data; // { access_token, refresh_token, user, ... }
 }
 
+export async function confirmMFA(totpCode) {
+  const res = await fetch(`${API_BASE}/auth/mfa/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+    body: JSON.stringify({ totp_code: totpCode }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, data };
+  return data; // { access_token, refresh_token, user, ... }
+}
+
+export async function disableMFA(password) {
+  const res = await fetch(`${API_BASE}/auth/mfa/disable`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+    body: JSON.stringify({ password }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, data };
+  return data;
+}
+
 export function updateSessionUser(updates) {
   const user = getSessionUser();
   if (user) localStorage.setItem('session_user', JSON.stringify({ ...user, ...updates }));

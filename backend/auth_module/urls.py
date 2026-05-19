@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
     RegisterView, LoginView, MFAEnableView, MFAVerifyView,
+    MFAConfirmView, MFADisableView,
     RefreshTokenView, get_user_public_key, list_users,
 )
 
@@ -9,7 +10,9 @@ urlpatterns = [
     path('login', LoginView.as_view(), name='auth-login'),
     path('token/refresh', RefreshTokenView.as_view(), name='auth-token-refresh'),
     path('mfa/enable', MFAEnableView.as_view(), name='auth-mfa-enable'),
+    path('mfa/confirm', MFAConfirmView.as_view(), name='auth-mfa-confirm'),
     path('mfa/verify', MFAVerifyView.as_view(), name='auth-mfa-verify'),
+    path('mfa/disable', MFADisableView.as_view(), name='auth-mfa-disable'),
     path('users/', list_users, name='list-users'),
     path('users/<uuid:user_id>/key', get_user_public_key, name='get_user_public_key'),
 ]
