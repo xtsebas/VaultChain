@@ -70,3 +70,60 @@ def verify_chain(request):
         'length': len(blocks),
         'detail': f'Cadena íntegra. {len(blocks)} bloque(s) verificado(s).',
     })
+
+
+@require_http_methods(['GET'])
+def verify_chain_from(request):
+    """
+    GET /blockchain/verify/from/?from=<index>
+    Verifica la integridad de la cadena desde el genesis hasta el bloque indicado.
+    """
+    from_param = request.GET.get('from')
+
+    if from_param is None:
+        return JsonResponse({'error': 'Parámetro "from" requerido'}, status=400)
+
+    try:
+        from_index = int(from_param)
+    except ValueError:
+        return JsonResponse({'error': 'El parámetro "from" debe ser un entero'}, status=400)
+
+    blocks = list(Block.objects.filter(index__lte=from_index).order_by('index'))
+
+    if not blocks:
+        return JsonResponse({'valid': False, 'error': 'No se encontraron bloques'}, status=404)
+
+    if blocks[-1].index != from_index:
+        return JsonResponse(
+            {'error': f'El bloque #{from_index} no existe'},
+            status=404,
+        )
+
+    for i, block in enumerate(blocks):
+        if block.hash != block.compute_hash():
+            return JsonResponse({
+                'valid':           False,
+                'from_index':      from_index,
+                'failed_at_index': block.index,
+                'reason':          'hash_mismatch',
+                'detail':          f'El hash almacenado del bloque #{block.index} no coincide con su compute_hash().',
+            })
+
+        if i > 0 and block.previous_hash != blocks[i - 1].hash:
+            return JsonResponse({
+                'valid':           False,
+                'from_index':      from_index,
+                'failed_at_index': block.index,
+                'reason':          'broken_link',
+                'detail':          (
+                    f'El bloque #{block.index} apunta a previous_hash={block.previous_hash[:16]}… '
+                    f'pero el hash del bloque #{blocks[i-1].index} es {blocks[i-1].hash[:16]}…'
+                ),
+            })
+
+    return JsonResponse({
+        'valid':      True,
+        'from_index': from_index,
+        'length':     len(blocks),
+        'detail':     f'Cadena íntegra desde genesis hasta bloque #{from_index}. {len(blocks)} bloque(s) verificado(s).',
+    })
