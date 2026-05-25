@@ -22,3 +22,5 @@ pycryptodome==3.23.0
 # Modulo 4: JWT + TOTP/MFA
 PyJWT==2.12.1
 pyotp==2.9.0
+qrcode[pil]==8.0
+Pillow==11.2.1

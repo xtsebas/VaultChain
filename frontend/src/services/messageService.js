@@ -7,7 +7,7 @@ import { log, LOG_TYPES } from './cryptoLog';
 import { getToken } from './authService';
 
 const { NETWORK, SUCCESS, ERROR } = LOG_TYPES;
-const API = 'http://localhost:8000';
+const API = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 function authHeaders() {
   return {

@@ -159,6 +159,16 @@ modulo.tests.archivo.Clase.metodo
 
 ---
 
+## Documentación
+
+| Documento | Descripción |
+|-----------|-------------|
+| [docs/endpoints.md](docs/endpoints.md) | Referencia completa de la API REST: ejemplos de request/response para cada endpoint |
+| [docs/arquitectura.md](docs/arquitectura.md) | Diseño de arquitectura del sistema |
+| [docs/analisis.md](docs/analisis.md) | Respuestas a preguntas de análisis del curso |
+
+---
+
 ## Equipo
 
 - Sebastian Huertas
