@@ -8,7 +8,7 @@ import {
 } from '../services/cryptoService';
 import {
   listUsers, sendDirectMessage, sendGroupMessage,
-  getMyMessages, createGroup, verifyMessageSignature,
+  getMyMessages, createGroup, getMyGroups, verifyMessageSignature,
 } from '../services/messageService';
 import {
   getSessionUser, getEncryptedPrivateKey,
@@ -207,32 +207,49 @@ function ComposeDialog({ onClose, users, onSent }) {
 // ── Compose grupal ─────────────────────────────────────────────────────────────
 function GroupDialog({ onClose, users, onSent }) {
   const me = getSessionUser();
+
+  // 'pick' = elegir nuevo o existente | 'new' = crear nuevo | 'send' = redactar mensaje
+  const [mode, setMode]                 = useState('pick');
   const [groupName, setGroupName]       = useState('');
   const [memberIds, setMemberIds]       = useState([]);
   const [plaintext, setPlaintext]       = useState('');
   const [groupId, setGroupId]           = useState(null);
   const [groupMembers, setGroupMembers] = useState([]);
-  const [step, setStep]                 = useState('compose');
+  const [myGroups, setMyGroups]         = useState([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState('');
   const [success, setSuccess]           = useState('');
+
+  useEffect(() => {
+    setLoadingGroups(true);
+    getMyGroups()
+      .then(setMyGroups)
+      .catch(() => setMyGroups([]))
+      .finally(() => setLoadingGroups(false));
+  }, []);
 
   async function handleCreateGroup() {
     if (!groupName.trim() || memberIds.length === 0) return;
     setLoading(true); setError('');
     try {
       log(LOG_TYPES.INFO, '=== CREANDO GRUPO ===');
-      // El usuario actual siempre se incluye como miembro
       const allMembers = [...new Set([me.id, ...memberIds])];
       const group = await createGroup(groupName, allMembers);
       setGroupId(group.id);
       setGroupMembers(group.members);
-      setStep('created');
+      setMode('send');
     } catch (e) {
       setError(e?.data?.error || e?.message || 'Error al crear grupo');
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleSelectExisting(group) {
+    setGroupId(group.id);
+    setGroupMembers(group.members);
+    setMode('send');
   }
 
   async function handleSendGroup() {
@@ -268,7 +285,42 @@ function GroupDialog({ onClose, users, onSent }) {
           {error   && <div className="alert alert-error">{error}</div>}
           {success && <div className="alert alert-success">{success}</div>}
 
-          {step === 'compose' && (
+          {mode === 'pick' && (
+            <>
+              {/* Grupos existentes */}
+              <div className="field">
+                <label>Grupos existentes</label>
+                {loadingGroups && <div className="msg-empty"><span className="spinner spinner-dk" /></div>}
+                {!loadingGroups && myGroups.length === 0 && (
+                  <div className="msg-empty" style={{ fontSize: 13 }}>No perteneces a ningún grupo aún.</div>
+                )}
+                {myGroups.map((g) => (
+                  <div
+                    key={g.id}
+                    className="msg-item"
+                    style={{ cursor: 'pointer', padding: '10px 12px' }}
+                    onClick={() => handleSelectExisting(g)}
+                  >
+                    <div className="av-sm">{g.name[0]?.toUpperCase()}</div>
+                    <div className="msg-meta">
+                      <div className="msg-sender">{g.name}</div>
+                      <div className="msg-date">{g.members.length} miembro(s)</div>
+                    </div>
+                    <span style={{ fontSize: 18 }}>→</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13, margin: '8px 0' }}>— o —</div>
+
+              {/* Crear nuevo */}
+              <button className="btn btn-outline-sec btn-sm" style={{ width: '100%' }} onClick={() => setMode('new')}>
+                ➕ Crear nuevo grupo
+              </button>
+            </>
+          )}
+
+          {mode === 'new' && (
             <>
               <div className="field">
                 <label>Nombre del grupo</label>
@@ -279,15 +331,9 @@ function GroupDialog({ onClose, users, onSent }) {
                   autoFocus
                 />
               </div>
-
               <div className="field">
                 <label>Destinatarios</label>
-                <PeoplePicker
-                  users={users}
-                  selected={memberIds}
-                  onChange={setMemberIds}
-                  fixedUser={me}
-                />
+                <PeoplePicker users={users} selected={memberIds} onChange={setMemberIds} fixedUser={me} />
                 {memberIds.length > 0 && (
                   <span className="helper">
                     {memberIds.length} destinatario(s) + tú = {memberIds.length + 1} miembro(s) en total
@@ -297,10 +343,10 @@ function GroupDialog({ onClose, users, onSent }) {
             </>
           )}
 
-          {step === 'created' && (
+          {mode === 'send' && (
             <>
               <div className="alert alert-info">
-                Grupo creado. La clave AES se cifrará con la llave pública de cada miembro.
+                Grupo listo. La clave AES se cifrará con la llave pública de cada miembro.
               </div>
               <div className="field">
                 <label>Mensaje grupal (plaintext)</label>
@@ -310,9 +356,13 @@ function GroupDialog({ onClose, users, onSent }) {
             </>
           )}
         </div>
+
         <div className="modal-footer">
           <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>
-          {step === 'compose' && (
+          {mode === 'new' && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setMode('pick')}>← Atrás</button>
+          )}
+          {mode === 'new' && (
             <button
               className="btn btn-outline-sec btn-sm"
               onClick={handleCreateGroup}
@@ -321,7 +371,10 @@ function GroupDialog({ onClose, users, onSent }) {
               {loading ? <span className="spinner spinner-dk" /> : '👥 Crear grupo'}
             </button>
           )}
-          {step === 'created' && (
+          {mode === 'send' && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setMode('pick')}>← Atrás</button>
+          )}
+          {mode === 'send' && (
             <button
               className="btn btn-secondary btn-sm"
               onClick={handleSendGroup}
