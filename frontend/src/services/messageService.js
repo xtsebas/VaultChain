@@ -107,6 +107,16 @@ export async function getMyMessages(userId) {
   return data.messages;
 }
 
+/** Obtiene los grupos donde el usuario autenticado es miembro. */
+export async function getMyGroups() {
+  log(NETWORK, 'GET /groups/ — obteniendo grupos del usuario…');
+  const res = await fetch(`${API}/groups/`, { headers: authHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw { status: res.status, data };
+  log(SUCCESS, `${data.groups.length} grupo(s) encontrado(s)`);
+  return data.groups;
+}
+
 /** Crea un grupo con los miembros dados. */
 export async function createGroup(name, memberIds) {
   log(NETWORK, `POST /groups/ — creando grupo "${name}"…`);
