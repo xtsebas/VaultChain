@@ -200,6 +200,44 @@ class SendMessageView(APIView):
 
 
 class CreateGroupView(APIView):
+    def get(self, request):
+        """
+        GET /groups/
+        Retorna todos los grupos donde el usuario autenticado es miembro.
+        """
+        sender, error = _authenticate_request(request)
+        if error:
+            return error
+
+        memberships = (
+            GroupMember.objects
+            .filter(user=sender)
+            .select_related('group')
+        )
+
+        groups = []
+        for m in memberships:
+            members = (
+                GroupMember.objects
+                .filter(group=m.group)
+                .select_related('user')
+            )
+            groups.append({
+                'id': str(m.group.id),
+                'name': m.group.name,
+                'created_at': m.group.created_at.isoformat(),
+                'members': [
+                    {
+                        'id': str(gm.user.id),
+                        'display_name': gm.user.display_name,
+                        'email': gm.user.email,
+                    }
+                    for gm in members
+                ],
+            })
+
+        return Response({'groups': groups})
+
     def post(self, request):
         """
         POST /groups/
