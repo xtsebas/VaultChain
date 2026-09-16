@@ -153,3 +153,22 @@ curl -i "http://localhost:8000/blockchain/verify/from/?from=../../etc/passwd"
 Resultado esperado en los tres casos: `400 Bad Request` con `{"error": "Invalid request path"}`, generado por el middleware antes de llegar al router/vista.
 
 **Estado:** Resuelto
+
+---
+
+## 4. Timestamp Disclosure (alerta OWASP ZAP)
+
+**Severidad:** Informativa
+
+**Descripción:** ZAP marcó un valor numérico tipo Unix timestamp expuesto en las respuestas del sitio. Se investigó el origen exacto para descartar que provenga de la lógica de negocio de la API.
+
+**Investigación:**
+- Se revisó todo el backend (`time.time()`, `.timestamp()`, referencias a epoch) sin ningún resultado: no existe código que genere o devuelva un timestamp en formato Unix epoch.
+- Todos los campos de fecha/hora que la API expone se serializan explícitamente con `.isoformat()` (`auth_module/views.py:189`, `blockchain/views.py:19`, `blockchain/models.py:27`), es decir, siempre como strings ISO 8601 (ej. `"2026-05-24T12:00:00.000000Z"`), nunca como enteros.
+- Se ubicó el origen real del valor: `frontend/node_modules/.vite/deps/d3.js.map`, el source map generado automáticamente por el optimizador de dependencias de Vite al pre-bundlear la librería `d3`. Este archivo contiene numerosas secuencias numéricas de 10-13 dígitos (datos de mapeo VLQ y constantes internas de los módulos de fecha/tiempo de `d3`, como `d3-time-format`/`d3-scale`) que caen dentro del rango que ZAP interpreta como epoch plausible (~1994-2030).
+
+**Conclusión:** el valor detectado proviene del tooling de build (cache del optimizador de dependencias de Vite / source map de una librería de terceros), no de la lógica de negocio ni de ningún endpoint de la API. Confirmado como **falso positivo**.
+
+**Acción tomada:** ninguna — no se requiere cambio de código. Este documento sirve como evidencia escrita de la investigación para el reporte de ZAP.
+
+**Estado:** Cerrado - falso positivo confirmado
