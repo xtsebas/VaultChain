@@ -61,6 +61,9 @@ CORS_ALLOWED_ORIGINS = [
     'http://127.0.0.1:3000',
 ]
 
+# Anti-clickjacking: fuerza X-Frame-Options: DENY en todas las respuestas
+X_FRAME_OPTIONS = 'DENY'
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
