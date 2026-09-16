@@ -106,3 +106,50 @@ Cross-Origin-Opener-Policy: same-origin
 **Pendiente para producción real:** cuando el sistema se despliegue detrás de HTTPS (reverse proxy/load balancer con TLS), repetir la prueba con `curl -ik https://<dominio>/auth/login` para confirmar que `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload` aparece en la respuesta.
 
 **Estado:** Resuelto (configuración activa)
+
+---
+
+## 3. Path Traversal (alerta OWASP ZAP)
+
+**Severidad:** Media
+
+**Descripción:** Un escaneo automatizado con OWASP ZAP marcó una alerta de Path Traversal. Se investigó el código del backend en busca de cualquier endpoint que use un parámetro de usuario (nombre de archivo, ruta, identificador) para leer o servir un archivo del sistema (`open()`, `FileResponse`, `send_file`, `MEDIA_ROOT`, `request.FILES`, etc.).
+
+**Hallazgo de la investigación:**
+- No existe ningún endpoint que abra o sirva archivos usando input de usuario. El único caso de generación de archivo (el QR de TOTP en `auth_module/views.py`) se construye enteramente en memoria con `io.BytesIO()` y nunca toca el filesystem.
+- Todos los parámetros dinámicos en las URLs (`auth_module/urls.py`, `crypto_module/urls.py`) usan el conversor `<uuid:...>` de Django, que valida el formato UUID en el router antes de que la request llegue a la vista.
+- El único parámetro de query string usado en el proyecto (`?from=` en `blockchain/views.py`) se castea explícitamente con `int()`, rechazando cualquier valor no numérico.
+
+**Corrección aplicada (defensa en profundidad):** aunque no se encontró un vector explotable hoy, se agregó un middleware global que rechaza cualquier request cuya ruta o query string contenga secuencias de path traversal (`../`, `..\`, `%2e%2e`, `..%2f`, `..%5c`, bytes nulos), antes de que la request llegue a cualquier vista. Esto protege contra endpoints futuros que pudieran manejar archivos sin la misma validación estricta que los actuales.
+
+**Archivos afectados:**
+- [`backend/middleware/path_traversal_middleware.py`](../backend/middleware/path_traversal_middleware.py) (nuevo)
+- [`backend/vaultchain/settings.py`](../backend/vaultchain/settings.py)
+
+**Solución aplicada:**
+```python
+# path_traversal_middleware.py
+_TRAVERSAL_PATTERNS = ('../', '..\\', '%2e%2e', '..%2f', '..%5c', '\x00')
+
+class PathTraversalProtectionMiddleware:
+    def __call__(self, request):
+        raw_target = urllib.parse.unquote(request.path + '?' + request.META.get('QUERY_STRING', ''))
+        if any(pattern in raw_target.lower() for pattern in _TRAVERSAL_PATTERNS):
+            return JsonResponse({'error': 'Invalid request path'}, status=400)
+        return self.get_response(request)
+```
+
+Registrado en `MIDDLEWARE` inmediatamente después de `SecurityMiddleware`, para cortar la request lo antes posible en el ciclo.
+
+**Verificación:**
+```bash
+docker-compose up --build
+```
+```bash
+curl -i "http://localhost:8000/auth/users/../../../../etc/passwd/key"
+curl -i "http://localhost:8000/messages/..%2f..%2f..%2fetc%2fpasswd"
+curl -i "http://localhost:8000/blockchain/verify/from/?from=../../etc/passwd"
+```
+Resultado esperado en los tres casos: `400 Bad Request` con `{"error": "Invalid request path"}`, generado por el middleware antes de llegar al router/vista.
+
+**Estado:** Resuelto
