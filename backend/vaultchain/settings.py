@@ -64,6 +64,14 @@ CORS_ALLOWED_ORIGINS = [
 # Anti-clickjacking: fuerza X-Frame-Options: DENY en todas las respuestas
 X_FRAME_OPTIONS = 'DENY'
 
+# HSTS: fuerza HTTPS en el navegador durante SECURE_HSTS_SECONDS.
+# SecurityMiddleware solo envia esta cabecera cuando request.is_secure() es True,
+# por lo que no tiene efecto en desarrollo local sobre HTTP.
+if not DEBUG:
+    SECURE_HSTS_SECONDS = 31536000  # 1 año
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
