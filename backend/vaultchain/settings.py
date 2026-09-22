@@ -54,12 +54,28 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [],
 }
 
+# Cross-Domain Misconfiguration hardening:
+# - Origins come from an explicit allowlist, never a wildcard/regex, and are
+#   configurable per environment via CORS_ALLOWED_ORIGINS (comma-separated).
+#   The hardcoded dev origins are only used as a local fallback.
+# - Credentials (cookies/Authorization via credentialed fetch) are NOT allowed
+#   cross-origin: this API authenticates with a Bearer JWT sent explicitly by
+#   the client, not cookies, so there is no legitimate need for
+#   Access-Control-Allow-Credentials, and enabling it alongside a broad
+#   origin list would let any allowed origin read authenticated responses.
+# - Allowed methods/headers are restricted to what the API actually uses.
+_default_dev_origins = (
+    'http://localhost:5173,http://127.0.0.1:5173,'
+    'http://localhost:3000,http://127.0.0.1:3000'
+)
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
+    origin.strip()
+    for origin in os.environ.get('CORS_ALLOWED_ORIGINS', _default_dev_origins).split(',')
+    if origin.strip()
 ]
+CORS_ALLOW_CREDENTIALS = False
+CORS_ALLOW_METHODS = ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']
+CORS_ALLOW_HEADERS = ['authorization', 'content-type']
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
