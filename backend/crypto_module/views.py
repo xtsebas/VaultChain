@@ -106,9 +106,10 @@ class SendMessageView(APIView):
                 auth_tag=encrypted['auth_tag'],
                 signature=data['signature'],
             )
-        except Exception as e:
+        except Exception:
+            logger.exception('Error processing direct message from %s to %s', sender.id, recipient_id)
             return Response(
-                {'error': f'Error processing message: {str(e)}'},
+                {'error': 'Error processing message'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -171,9 +172,10 @@ class SendMessageView(APIView):
                     signature=data['signature'],
                 )
                 messages.append(msg)
-        except Exception as e:
+        except Exception:
+            logger.exception('Error processing group message for group %s', group_id)
             return Response(
-                {'error': f'Error processing group message: {str(e)}'},
+                {'error': 'Error processing group message'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -413,5 +415,6 @@ def get_user_messages(request, user_id):
 
         return JsonResponse({'messages': messages_data}, status=200)
 
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+    except Exception:
+        logger.exception('Error retrieving messages for user %s', user_id)
+        return JsonResponse({'error': 'Error retrieving messages'}, status=500)
