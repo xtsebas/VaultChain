@@ -39,10 +39,10 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'auth_module',
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
-    'auth_module',
     'crypto_module',
     'blockchain',
 ]
@@ -63,6 +63,8 @@ CORS_ALLOWED_ORIGINS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'middleware.csp_middleware.ContentSecurityPolicyMiddleware',
+    'middleware.server_header_middleware.ServerHeaderMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
